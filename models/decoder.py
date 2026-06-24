@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
+### for ablation study (skip connection X) ###
 class RegressionDecoder(nn.Module):
     def __init__(self, backbone_channels, out_channels=1):
         super(RegressionDecoder, self).__init__()
@@ -33,67 +33,6 @@ class RegressionDecoder(nn.Module):
 
     def forward(self, x):  # x: (B, C, 64, 64)
         return self.conv(x)  # (B, 1, 256, 256)
-
-'''
-class HRFormerSkipDecoder(nn.Module):
-    def __init__(
-        self,
-        backbone_channels=32,
-        stem2_channels=64,
-        stem1_channels=64,
-        hidden_channels=64,
-        out_channels=1,
-    ):
-        super().__init__()
-
-        # 64×64에서 backbone branch0와 conv2 feature를 concat
-        self.fuse_64 = nn.Sequential(
-            ConvBNAct(backbone_channels + stem2_channels, hidden_channels),
-            ConvBNAct(hidden_channels, hidden_channels),
-        )
-
-        # 128×128에서 conv1 feature와 concat
-        self.fuse_128 = nn.Sequential(
-            ConvBNAct(hidden_channels + stem1_channels, hidden_channels),
-            ConvBNAct(hidden_channels, hidden_channels),
-        )
-
-        # 256×256 복원
-        self.fuse_256 = nn.Sequential(
-            ConvBNAct(hidden_channels, hidden_channels),
-            ConvBNAct(hidden_channels, hidden_channels),
-            nn.Conv2d(hidden_channels, out_channels, kernel_size=1),
-        )
-
-    def forward(self, x, stem1, stem2):
-        # x:     [B, 32, 64, 64]
-        # stem2: [B, 64, 64, 64]
-        # stem1: [B, 64, 128, 128]
-
-        x = torch.cat([x, stem2], dim=1)  # [B, 96, 64, 64]
-        x = self.fuse_64(x)              # [B, 64, 64, 64]
-
-        x = F.interpolate(
-            x,
-            size=stem1.shape[-2:],
-            mode="bilinear",
-            align_corners=False,
-        )                                # [B, 64, 128, 128]
-
-        x = torch.cat([x, stem1], dim=1) # [B, 128, 128, 128]
-        x = self.fuse_128(x)             # [B, 64, 128, 128]
-
-        x = F.interpolate(
-            x,
-            scale_factor=2,
-            mode="bilinear",
-            align_corners=False,
-        )                                # [B, 64, 256, 256]
-
-        x = self.fuse_256(x)             # [B, 1, 256, 256]
-
-        return x
-'''
 
 class ConvBNAct(nn.Module):
     def __init__(self, in_channels, out_channels, act_layer=nn.GELU):
