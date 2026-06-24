@@ -14,8 +14,12 @@ class PhysicsTargetBuilder(nn.Module):
         grad: |nabla u|, first-order spatial transition of the label-derived field.
         lap: |Delta u|, second-order local curvature of the label-derived field.
         singularity: RadioDiff-k2-inspired inverted negative-k2 map.
-        los: Tx-to-pixel line-of-sight visibility map.
-        obstacle: obstacle-intersection length map along Tx-to-pixel rays.
+        radial_gain: label-free log-distance Tx gain prior computed online from x.
+        los: legacy Tx-to-pixel line-of-sight visibility map.
+        obstacle: legacy obstacle-intersection target (kept for backward compatibility).
+        obstacle_sum: precomputed normalized ray-obstruction integral.
+        obstacle_saturating_a003: precomputed 1-exp(-0.03 * obstruction length).
+        obstacle_saturating_a005: precomputed 1-exp(-0.05 * obstruction length).
 
     Expected input layout:
         cars mode     : [building, cars, Tx]
@@ -24,11 +28,15 @@ class PhysicsTargetBuilder(nn.Module):
     Precomputed geometry layout:
         <geo_precompute_root>/<geo_mode_name>/<geo_split>/<sample_name>.pt
 
-    Each .pt file should contain:
+    Current obstacle-only .pt files should contain:
         {
-            "los": Tensor[1,H,W],
-            "obstacle": Tensor[1,H,W],
+            "obstacle_sum": Tensor[1,H,W],
+            "obstacle_saturating_a003": Tensor[1,H,W],
+            "obstacle_saturating_a005": Tensor[1,H,W],
         }
+
+    `radial_gain` is deliberately generated online because it only requires the
+    Tx location and a lightweight distance-grid calculation.
     """
 
     SINGULARITY_ALIASES = {
@@ -41,7 +49,25 @@ class PhysicsTargetBuilder(nn.Module):
         "rk2_neg_inv",
     }
 
-    VALID_TARGETS = {"grad", "lap", "singularity", "los", "obstacle"}
+    PRECOMPUTED_GEO_TARGETS = {
+        "los",
+        "obstacle",
+        "obstacle_sum",
+        "obstacle_saturating_a003",
+        "obstacle_saturating_a005",
+    }
+
+    VALID_TARGETS = {
+        "grad",
+        "lap",
+        "singularity",
+        "radial_gain",
+        "los",
+        "obstacle",
+        "obstacle_sum",
+        "obstacle_saturating_a003",
+        "obstacle_saturating_a005",
+    }
 
     def __init__(
         self,
@@ -182,13 +208,24 @@ class PhysicsTargetBuilder(nn.Module):
         )
 
     def _load_precomputed_geo(self, names, requested_targets, device, dtype):
+        """Load precomputed ray-obstruction maps.
+
+        Compatibility behavior:
+            - `obstacle_sum` loads the new `obstacle_sum` key.
+            - `obstacle_saturating_a003` / `_a005` load their exact keys.
+            - legacy `obstacle` first tries `obstacle`; if absent, it falls back
+              to `obstacle_sum` so older training commands remain usable.
+        """
         if names is None:
             raise ValueError(
                 "names must be provided to load precomputed geometry targets. "
                 "Set cfg['data']['return_name']=True in the pretraining pipeline."
             )
 
-        requested_targets = [t for t in requested_targets if t in ("los", "obstacle")]
+        requested_targets = [
+            target for target in requested_targets
+            if target in self.PRECOMPUTED_GEO_TARGETS
+        ]
         loaded = {key: [] for key in requested_targets}
 
         for name in names:
@@ -200,13 +237,26 @@ class PhysicsTargetBuilder(nn.Module):
                 )
 
             data = torch.load(path, map_location="cpu")
-            for key in requested_targets:
-                if key not in data:
+
+            for requested_key in requested_targets:
+                if requested_key == "obstacle":
+                    candidate_keys = ("obstacle", "obstacle_sum")
+                elif requested_key == "obstacle_sum":
+                    candidate_keys = ("obstacle_sum", "obstacle")
+                else:
+                    candidate_keys = (requested_key,)
+
+                source_key = next(
+                    (key for key in candidate_keys if key in data),
+                    None,
+                )
+                if source_key is None:
                     raise KeyError(
-                        f"Key '{key}' not found in {path}. "
+                        f"None of {candidate_keys} was found in {path}. "
                         f"Available keys: {list(data.keys())}"
                     )
-                loaded[key].append(data[key].float())
+
+                loaded[requested_key].append(data[source_key].float())
 
         return {
             key: torch.stack(values, dim=0).to(device=device, dtype=dtype)
@@ -280,6 +330,40 @@ class PhysicsTargetBuilder(nn.Module):
         zmin = z.amin(dim=(2, 3), keepdim=True)
         zmax = z.amax(dim=(2, 3), keepdim=True)
         return (z - zmin) / (zmax - zmin + self.eps)
+
+    @torch.no_grad()
+    def _radial_gain(self, x):
+        """Build a label-free log-distance gain prior from Tx locations.
+
+        Output semantics:
+            - 1.0 at the transmitter pixel.
+            - Monotonic decay with Tx-pixel distance.
+            - Map-diagonal normalization, rather than per-sample max distance,
+              keeps the target scale comparable across Tx locations.
+
+        This map is intentionally computed online: it requires only O(HW)
+        arithmetic and is negligible compared with backbone forward/backward cost.
+        """
+        tx = self._select_channel(x, self.tx_channel).float()
+        batch_size, _, height, width = tx.shape
+        device = x.device
+        dtype = x.dtype
+
+        flat = tx.flatten(2).argmax(dim=-1).squeeze(1)
+        tx_y = (flat // width).to(dtype=torch.float32)
+        tx_x = (flat % width).to(dtype=torch.float32)
+
+        yy = torch.arange(height, device=device, dtype=torch.float32).view(1, 1, height, 1)
+        xx = torch.arange(width, device=device, dtype=torch.float32).view(1, 1, 1, width)
+
+        distance = torch.sqrt(
+            (yy - tx_y.view(batch_size, 1, 1, 1)) ** 2
+            + (xx - tx_x.view(batch_size, 1, 1, 1)) ** 2
+        )
+
+        max_distance = math.sqrt((height - 1) ** 2 + (width - 1) ** 2)
+        radial_gain = 1.0 - torch.log1p(distance) / math.log1p(max_distance)
+        return radial_gain.clamp(0.0, 1.0).to(dtype=dtype)
 
     def _singularity_target(self, y, x):
         y = y.float().clamp(0.0, 1.0)
@@ -372,6 +456,9 @@ class PhysicsTargetBuilder(nn.Module):
 
         targets = {}
 
+        # ------------------------------------------------------------------
+        # Label-driven ablation targets.
+        # ------------------------------------------------------------------
         need_label_targets = any(t in target_names for t in ("grad", "lap"))
         if need_label_targets:
             u = self._to_field_amplitude(y.float())
@@ -384,7 +471,20 @@ class PhysicsTargetBuilder(nn.Module):
         if "singularity" in target_names:
             targets["singularity"] = self._singularity_target(y, x)
 
-        requested_geo = [t for t in target_names if t in ("los", "obstacle")]
+        # ------------------------------------------------------------------
+        # Input-driven global propagation prior. This never reads y or .pt files.
+        # ------------------------------------------------------------------
+        if "radial_gain" in target_names:
+            targets["radial_gain"] = self._radial_gain(x)
+
+        # ------------------------------------------------------------------
+        # Ray-obstruction targets. New scripts precompute obstacle_sum and two
+        # saturating variants. `obstacle` remains a legacy alias / fallback.
+        # ------------------------------------------------------------------
+        requested_geo = [
+            target for target in target_names
+            if target in self.PRECOMPUTED_GEO_TARGETS
+        ]
         if requested_geo:
             if self.geo_precompute_root is not None:
                 geo_targets = self._load_precomputed_geo(
@@ -394,8 +494,22 @@ class PhysicsTargetBuilder(nn.Module):
                     dtype=x.dtype,
                 )
             else:
-                los, obstacle = self._visibility_and_obstacle(x.float())
-                geo_targets = {"los": los, "obstacle": self._minmax(obstacle)}
+                # Online fallback for debugging only. Full training should use
+                # precomputed targets because ray traversal is expensive.
+                los, obstacle_raw = self._visibility_and_obstacle(x.float())
+                obstacle_sum = self._minmax(obstacle_raw)
+
+                geo_targets = {
+                    "los": los.to(dtype=x.dtype),
+                    "obstacle": obstacle_sum.to(dtype=x.dtype),
+                    "obstacle_sum": obstacle_sum.to(dtype=x.dtype),
+                    "obstacle_saturating_a003": (
+                        1.0 - torch.exp(-0.03 * obstacle_raw)
+                    ).clamp(0.0, 1.0).to(dtype=x.dtype),
+                    "obstacle_saturating_a005": (
+                        1.0 - torch.exp(-0.05 * obstacle_raw)
+                    ).clamp(0.0, 1.0).to(dtype=x.dtype),
+                }
 
             for name in requested_geo:
                 targets[name] = geo_targets[name]
@@ -403,11 +517,13 @@ class PhysicsTargetBuilder(nn.Module):
         return targets
 
 
+
 class PhysicsPretrainLoss(nn.Module):
     """Multi-task loss for physics-map pretraining.
 
     Regression targets:
-        grad, lap, obstacle
+        grad, lap, radial_gain, obstacle, obstacle_sum,
+        obstacle_saturating_a003, obstacle_saturating_a005
 
     BCE targets:
         los, singularity
