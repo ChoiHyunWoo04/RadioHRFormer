@@ -17,21 +17,18 @@ from utils import set_seed, prepare_device
 
 
 # -----------------------------------------------------------------------------
-# Online visualizer for all pretraining targets.
+# Online visualizer for RadioMapSeer physics-pretraining targets.
 #
-# Label-driven maps, generated from the radio-map label y:
-#   grad, lap, singularity
+# All experiment-specific options are read from hrt.json. The command line only
+# selects the config file and optionally redirects the output directory.
 #
-# Input-driven maps, generated on-the-fly from input geometry x:
-#   obstacle_sum
-#   obstacle_saturating_a003
-#   obstacle_saturating_a005
-#   radial_gain
-#   corner_diffraction
+# The visualizer keeps the same online target definitions as the previous script:
+#   label-driven: grad, lap, singularity
+#   geometry-driven: los, obstacle, obstacle_sum, obstacle_saturating_a003,
+#                    obstacle_saturating_a005, radial_gain, corner_diffraction
 #
-# This script intentionally does NOT read any precomputed .pt target files.
-# It uses the same target definitions as the offline precompute script, so it
-# is appropriate for inspecting target quality before precomputing the dataset.
+# `los` and `obstacle` are included so that the legacy cfg target list
+# [grad, lap, los, obstacle] can also be visualized without changing cfg.
 # -----------------------------------------------------------------------------
 
 
@@ -45,117 +42,36 @@ ONLINE_INPUT_TARGETS = {
 }
 SUPPORTED_TARGETS = ONLINE_LABEL_TARGETS | ONLINE_INPUT_TARGETS
 
+TARGET_ALIASES = {
+    "radial-gain": "radial_gain",
+    "corner-diffraction": "corner_diffraction",
+    "obstacle-saturating": "obstacle_saturating_a003",
+    "obstacle_saturating": "obstacle_saturating_a003",
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Visualize all RadioMapSeer pretraining maps online without loading "
-            "precomputed .pt files."
+            "Visualize randomly sampled RadioMapSeer inputs, labels, and "
+            "physics-pretraining targets using values from the JSON config."
         )
     )
-
-    # Dataset / runtime
-    parser.add_argument("--config-path", type=str, default="./configs/hrformer_radiomapseer.json")
-    parser.add_argument("--data-root", type=str, default=None)
-    parser.add_argument("--save-dir", type=str, default="./save/visual_online")
     parser.add_argument(
-        "--input-mode",
-        choices=["building", "cars"],
-        default="cars",
-        help="building: [building, building, Tx], cars: [building, cars, Tx].",
+        "--config-path",
+        type=str,
+        default="./configs/hrt.json",
+        help="Path to the shared HRFormer JSON config.",
     )
     parser.add_argument(
-        "--target-type",
-        choices=["DPM", "carsDPM"],
+        "--save-dir",
+        type=str,
         default=None,
-        help="If omitted: building -> DPM, cars -> carsDPM.",
-    )
-    parser.add_argument("--num-tx", type=int, default=None)
-    parser.add_argument("--thresh", type=float, default=None)
-    parser.add_argument("--split", choices=["train", "val", "valid", "test"], default="train")
-
-    parser.add_argument("--num-samples", type=int, default=1)
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=1,
-        help="Use 1 for online ray-based maps to avoid unnecessary waiting.",
-    )
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--cuda", type=str, default="0")
-    parser.add_argument("--seed", type=int, default=None)
-
-    # Target selection
-    parser.add_argument(
-        "--physics-targets",
-        type=str,
-        default=(
-            "grad,lap,singularity,obstacle_sum,obstacle_saturating_a003,"
-            "obstacle_saturating_a005,radial_gain,corner_diffraction"
-        ),
         help=(
-            "Comma-separated targets. Supported: grad,lap,singularity,"
-            "obstacle_sum,obstacle_saturating_a003,obstacle_saturating_a005,"
-            "radial_gain,corner_diffraction."
+            "Optional output-directory override. If omitted, uses "
+            "cfg['visualize']['save_dir']."
         ),
     )
-
-    # Label-driven target options
-    parser.add_argument(
-        "--field-mode",
-        choices=["normalized_power", "db_power", "pathloss_db"],
-        default="normalized_power",
-    )
-    parser.add_argument("--gaussian-sigma", type=float, default=1.0)
-    parser.add_argument("--eps", type=float, default=1e-4)
-    parser.add_argument("--tx-channel", type=int, default=-1)
-    parser.add_argument(
-        "--no-normalize-each-sample",
-        action="store_true",
-        help="Disable sample-wise standardization for online grad/lap maps.",
-    )
-
-    # Singularity / RadioDiff-k2-like target options
-    parser.add_argument("--radiodiff-pathloss-trunc", type=float, default=-147.0)
-    parser.add_argument("--radiodiff-pathloss-max", type=float, default=-47.0)
-    parser.add_argument("--radiodiff-source-power-dbm", type=float, default=23.0)
-    parser.add_argument("--radiodiff-h", type=float, default=1.0)
-    parser.add_argument("--radiodiff-border-value", type=float, default=1.0)
-    parser.add_argument("--radiodiff-eps", type=float, default=1e-30)
-    parser.add_argument("--radiodiff-smooth-sigma", type=float, default=0.9)
-
-    # Input-driven geometry options
-    parser.add_argument(
-        "--obstacle-channels",
-        type=str,
-        default="0,1",
-        help="Comma-separated channels used as obstacles. For [building,cars,Tx], use 0,1.",
-    )
-    parser.add_argument("--building-threshold", type=float, default=0.5)
-    parser.add_argument(
-        "--obstacle-alphas",
-        type=str,
-        default="0.03,0.05",
-        help=(
-            "Alpha values for saturation maps. The current visualization supports "
-            "0.03 and/or 0.05 because their target names are fixed."
-        ),
-    )
-    parser.add_argument("--corner-sigma", type=float, default=3.0)
-    parser.add_argument("--corner-posthit-decay", type=float, default=0.03)
-    parser.add_argument("--corner-max-corners", type=int, default=128)
-    parser.add_argument("--corner-response-threshold", type=float, default=0.05)
-    parser.add_argument("--corner-nms-radius", type=int, default=2)
-    parser.add_argument("--corner-harris-k", type=float, default=0.04)
-
-    # Figure
-    parser.add_argument("--dpi", type=int, default=180)
-    parser.add_argument(
-        "--save-individual",
-        action="store_true",
-        help="Also save one PNG per input/label/target map.",
-    )
-
     return parser.parse_args()
 
 
@@ -166,34 +82,122 @@ def load_config(config_path):
         return json.load(f)
 
 
-def apply_radiomapseer_overrides(cfg, args):
+def cfg_get(cfg, keys, default=None):
+    current = cfg
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return current
+
+
+def _as_list(value, default):
+    if value is None:
+        value = default
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def apply_visualizer_config(cfg, args):
+    """Prepare a loader-only cfg while preserving shared cfg settings.
+
+    The visualizer needs sample names and a small loader batch. All dataset,
+    physics, seed, and runtime values are otherwise read directly from cfg.
+    """
     cfg.setdefault("data", {})
-
-    if args.data_root is not None:
-        cfg["data"]["root_dir"] = args.data_root
-    if args.num_tx is not None:
-        cfg["data"]["num_tx"] = args.num_tx
-    if args.thresh is not None:
-        cfg["data"]["thresh"] = args.thresh
-
-    cfg["data"]["batch_size"] = args.batch_size
-    cfg["data"]["num_workers"] = args.num_workers
-    cfg["data"]["pin_memory"] = False
-    cfg["data"]["persistent_workers"] = False
-    cfg["data"]["return_name"] = True
-
-    if args.input_mode == "building":
-        cfg["data"]["cars_input"] = False
-        cfg["data"]["target_type"] = args.target_type or "DPM"
-    else:
-        cfg["data"]["cars_input"] = True
-        cfg["data"]["target_type"] = args.target_type or "carsDPM"
+    cfg.setdefault("physics", {})
+    visualize_cfg = cfg.setdefault("visualize", {})
 
     if cfg["data"].get("root_dir") is None:
-        raise ValueError(
-            "RadioMapSeer root is required. Use --data-root or set cfg['data']['root_dir']."
-        )
+        raise ValueError("cfg['data']['root_dir'] must be set.")
+
+    # A ray-based target is computed per sample. Keep the visualization loader
+    # separate from the training batch size to avoid computing unused samples.
+    cfg["data"]["batch_size"] = int(visualize_cfg.get("batch_size", 1))
+    cfg["data"]["num_workers"] = int(
+        visualize_cfg.get("num_workers", cfg["data"].get("num_workers", 0))
+    )
+    cfg["data"]["pin_memory"] = bool(
+        visualize_cfg.get("pin_memory", cfg["data"].get("pin_memory", True))
+    )
+    cfg["data"]["persistent_workers"] = bool(
+        visualize_cfg.get("persistent_workers", cfg["data"].get("persistent_workers", False))
+    ) and cfg["data"]["num_workers"] > 0
+    cfg["data"]["return_name"] = True
+
+    if args.save_dir is not None:
+        visualize_cfg["save_dir"] = args.save_dir
+
+    visualize_cfg.setdefault("save_dir", "./save/visual_online")
+    visualize_cfg.setdefault("split", "train")
+    visualize_cfg.setdefault("num_samples", 1)
+    visualize_cfg.setdefault("dpi", 180)
+    visualize_cfg.setdefault("save_grid", True)
+    visualize_cfg.setdefault("save_individual", True)
+
     return cfg
+
+
+def resolve_visualizer_device(cfg):
+    runtime_cfg = cfg_get(cfg, ["runtime"], {}) or {}
+    gpu_ids = _as_list(runtime_cfg.get("gpus", [0]), [0])
+
+    if torch.cuda.is_available() and gpu_ids:
+        # A visualization task uses the first configured GPU only. DataParallel
+        # would add overhead and provides no benefit for a few sampled maps.
+        return prepare_device(str(int(gpu_ids[0])))
+    return torch.device("cpu")
+
+
+def resolve_visualizer_options(cfg):
+    data_cfg = cfg["data"]
+    physics_cfg = cfg.get("physics", {})
+    visualize_cfg = cfg.get("visualize", {})
+
+    target_values = visualize_cfg.get("targets", physics_cfg.get("targets"))
+    if target_values is None:
+        raise KeyError(
+            "Set cfg['physics']['targets'] or cfg['visualize']['targets']."
+        )
+
+    return {
+        "seed": int(cfg.get("seed", 42)),
+        "split": str(visualize_cfg["split"]),
+        "num_samples": int(visualize_cfg["num_samples"]),
+        "save_dir": str(visualize_cfg["save_dir"]),
+        "dpi": int(visualize_cfg["dpi"]),
+        "save_grid": bool(visualize_cfg["save_grid"]),
+        "save_individual": bool(visualize_cfg["save_individual"]),
+        "batch_size": int(data_cfg["batch_size"]),
+        "num_workers": int(data_cfg["num_workers"]),
+        "cars_input": bool(data_cfg.get("cars_input", False)),
+        "target_type": str(data_cfg.get("target_type", "DPM")),
+        "target_names": parse_target_names(target_values),
+        "field_mode": str(physics_cfg.get("field_mode", "normalized_power")),
+        "gaussian_sigma": float(physics_cfg.get("gaussian_sigma", 1.0)),
+        "eps": float(physics_cfg.get("eps", 1e-4)),
+        "tx_channel": int(physics_cfg.get("tx_channel", -1)),
+        "normalize_each_sample": bool(physics_cfg.get("normalize_each_sample", True)),
+        "building_threshold": float(physics_cfg.get("building_threshold", 0.5)),
+        "obstacle_channels": parse_int_list(physics_cfg.get("obstacle_channels", [0, 1])),
+        "obstacle_alphas": parse_float_list(physics_cfg.get("obstacle_alphas", [0.03, 0.05])),
+        "corner_sigma": float(physics_cfg.get("corner_sigma", 3.0)),
+        "corner_posthit_decay": float(physics_cfg.get("corner_posthit_decay", 0.03)),
+        "corner_max_corners": int(physics_cfg.get("corner_max_corners", 128)),
+        "corner_response_threshold": float(physics_cfg.get("corner_response_threshold", 0.05)),
+        "corner_nms_radius": int(physics_cfg.get("corner_nms_radius", 2)),
+        "corner_harris_k": float(physics_cfg.get("corner_harris_k", 0.04)),
+        "radiodiff_pathloss_trunc": float(physics_cfg.get("radiodiff_pathloss_trunc", -147.0)),
+        "radiodiff_pathloss_max": float(physics_cfg.get("radiodiff_pathloss_max", -47.0)),
+        "radiodiff_source_power_dbm": float(physics_cfg.get("radiodiff_source_power_dbm", 23.0)),
+        "radiodiff_h": float(physics_cfg.get("radiodiff_h", 1.0)),
+        "radiodiff_border_value": float(physics_cfg.get("radiodiff_border_value", 1.0)),
+        "radiodiff_eps": float(physics_cfg.get("radiodiff_eps", 1e-30)),
+        "radiodiff_smooth_sigma": float(physics_cfg.get("radiodiff_smooth_sigma", 0.9)),
+    }
 
 
 def get_split_loader(cfg, split):
@@ -222,31 +226,42 @@ def unpack_batch(batch):
     return x, y, names
 
 
-def parse_target_names(text):
-    names = [name.strip() for name in text.split(",") if name.strip()]
+def parse_target_names(values):
+    names = _as_list(values, [])
     if not names:
-        raise ValueError("At least one target must be provided.")
+        raise ValueError("At least one visualization target must be provided.")
 
-    names = list(dict.fromkeys(names))
-    invalid = [name for name in names if name not in SUPPORTED_TARGETS]
+    normalized_names = []
+    for raw_name in names:
+        name = TARGET_ALIASES.get(str(raw_name).strip(), str(raw_name).strip())
+        if name and name not in normalized_names:
+            normalized_names.append(name)
+
+    invalid = [name for name in normalized_names if name not in SUPPORTED_TARGETS]
     if invalid:
         raise ValueError(
-            f"Unsupported target(s): {invalid}. Supported: {sorted(SUPPORTED_TARGETS)}"
+            f"Unsupported visualization target(s): {invalid}. "
+            f"Supported: {sorted(SUPPORTED_TARGETS)}"
         )
-    return names
+    return normalized_names
 
 
-def parse_int_list(text):
-    return tuple(int(v.strip()) for v in text.split(",") if v.strip())
+def parse_int_list(values):
+    values = _as_list(values, [])
+    parsed = tuple(int(v) for v in values)
+    if not parsed:
+        raise ValueError("obstacle_channels must contain at least one channel index.")
+    return parsed
 
 
-def parse_float_list(text):
-    values = [float(v.strip()) for v in text.split(",") if v.strip()]
-    if not values:
-        raise ValueError("--obstacle-alphas must contain at least one alpha.")
-    if any(value <= 0 for value in values):
-        raise ValueError(f"All --obstacle-alphas must be positive. Got: {values}")
-    return tuple(dict.fromkeys(values))
+def parse_float_list(values):
+    values = _as_list(values, [])
+    parsed = tuple(dict.fromkeys(float(v) for v in values))
+    if not parsed:
+        raise ValueError("obstacle_alphas must contain at least one alpha.")
+    if any(value <= 0 for value in parsed):
+        raise ValueError(f"All obstacle_alphas must be positive. Got: {parsed}")
+    return parsed
 
 
 def safe_stem(name):
@@ -467,8 +482,13 @@ def compute_input_driven_targets(
                     * math.exp(-float(corner_posthit_decay) * post_hit_distance)
                 )
 
+    normalized_obstacle = minmax(obstacle_sum_raw)
     targets = {
-        "obstacle_sum": minmax(obstacle_sum_raw),
+        # `obstacle` is kept as a legacy alias for the normalized cumulative
+        # obstacle map used in the earlier pretraining configuration.
+        "los": (obstacle_sum_raw <= 0).float(),
+        "obstacle": normalized_obstacle,
+        "obstacle_sum": normalized_obstacle,
         "radial_gain": radial_gain,
         "corner_diffraction": corner_diffraction.clamp(0.0, 1.0),
     }
@@ -499,17 +519,19 @@ def minmax_for_display(tensor, eps=1e-8):
     return (z - zmin) / (zmax - zmin + eps)
 
 
-def infer_channel_titles(x, input_mode):
+def infer_channel_titles(x, cars_input):
     c = x.shape[0]
-    if input_mode == "building":
-        base = ["input ch0: building", "input ch1: building", "input ch2: Tx"]
-    else:
+    if cars_input:
         base = ["input ch0: building", "input ch1: cars", "input ch2: Tx"]
+    else:
+        base = ["input ch0: building", "input ch1: building", "input ch2: Tx"]
     return base[:c] if c <= len(base) else base + [f"input ch{i}" for i in range(len(base), c)]
 
 
 def pretty_target_name(name):
     aliases = {
+        "los": "line of sight",
+        "obstacle": "obstacle: cumulative",
         "obstacle_sum": "obstacle: sum",
         "obstacle_saturating_a003": "obstacle: saturating (α=0.03)",
         "obstacle_saturating_a005": "obstacle: saturating (α=0.05)",
@@ -521,13 +543,18 @@ def pretty_target_name(name):
 
 def save_single_map(path, img, title, cmap="viridis", dpi=180):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+
     plt.figure(figsize=(4, 4))
-    image = plt.imshow(to_numpy_img(minmax_for_display(img)), cmap=cmap)
-    plt.title(title, fontsize=9)
+    plt.imshow(to_numpy_img(minmax_for_display(img)), cmap=cmap)
     plt.axis("off")
-    plt.colorbar(image, fraction=0.046, pad=0.04)
-    plt.tight_layout()
-    plt.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+    plt.savefig(
+        path,
+        dpi=dpi,
+        bbox_inches="tight",
+        pad_inches=0,
+    )
     plt.close()
 
 
@@ -536,12 +563,12 @@ def save_sample_grid(
     x_i,
     y_i,
     targets_i: Dict[str, torch.Tensor],
-    input_mode,
+    cars_input,
     name: Optional[str] = None,
     dpi=180,
 ):
     panels = []
-    titles = infer_channel_titles(x_i, input_mode)
+    titles = infer_channel_titles(x_i, cars_input)
 
     for channel in range(x_i.shape[0]):
         panels.append((titles[channel], x_i[channel], "gray"))
@@ -581,16 +608,50 @@ def save_sample_grid(
     plt.close(fig)
 
 
+def save_individual_maps(sample_dir, x_i, y_i, targets_i, cars_input, dpi):
+    """Save every panel as a standalone PNG in the sample directory."""
+    os.makedirs(sample_dir, exist_ok=True)
+    titles = infer_channel_titles(x_i, cars_input)
+
+    for channel, title in enumerate(titles):
+        save_single_map(
+            os.path.join(sample_dir, f"input_ch{channel}.png"),
+            x_i[channel],
+            title,
+            cmap="gray",
+            dpi=dpi,
+        )
+
+    save_single_map(
+        os.path.join(sample_dir, "label_y.png"),
+        y_i[0],
+        "label y",
+        cmap="viridis",
+        dpi=dpi,
+    )
+
+    for target_name, target_map in targets_i.items():
+        save_single_map(
+            os.path.join(sample_dir, f"physics_{target_name}.png"),
+            target_map[0],
+            f"physics: {pretty_target_name(target_name)}",
+            cmap="viridis",
+            dpi=dpi,
+        )
+
+
 def main():
     args = parse_args()
-    cfg = apply_radiomapseer_overrides(load_config(args.config_path), args)
+    cfg = apply_visualizer_config(load_config(args.config_path), args)
+    opts = resolve_visualizer_options(cfg)
 
-    seed = args.seed if args.seed is not None else cfg.get("seed", 42)
-    set_seed(seed)
+    if opts["num_samples"] <= 0:
+        raise ValueError("cfg['visualize']['num_samples'] must be positive.")
 
-    device = prepare_device(args.cuda)
-    target_names = parse_target_names(args.physics_targets)
+    set_seed(opts["seed"])
+    device = resolve_visualizer_device(cfg)
 
+    target_names = opts["target_names"]
     requested_label_targets = [
         name for name in target_names if name in ONLINE_LABEL_TARGETS
     ]
@@ -598,14 +659,21 @@ def main():
         name for name in target_names if name in ONLINE_INPUT_TARGETS
     ]
 
-    obstacle_channels = parse_int_list(args.obstacle_channels)
-    obstacle_alphas = parse_float_list(args.obstacle_alphas)
-
     missing_alpha_targets = []
-    if "obstacle_saturating_a003" in requested_input_targets and 0.03 not in obstacle_alphas:
-        missing_alpha_targets.append("obstacle_saturating_a003 requires --obstacle-alphas to include 0.03")
-    if "obstacle_saturating_a005" in requested_input_targets and 0.05 not in obstacle_alphas:
-        missing_alpha_targets.append("obstacle_saturating_a005 requires --obstacle-alphas to include 0.05")
+    if (
+        "obstacle_saturating_a003" in requested_input_targets
+        and 0.03 not in opts["obstacle_alphas"]
+    ):
+        missing_alpha_targets.append(
+            "obstacle_saturating_a003 requires physics.obstacle_alphas to include 0.03"
+        )
+    if (
+        "obstacle_saturating_a005" in requested_input_targets
+        and 0.05 not in opts["obstacle_alphas"]
+    ):
+        missing_alpha_targets.append(
+            "obstacle_saturating_a005 requires physics.obstacle_alphas to include 0.05"
+        )
     if missing_alpha_targets:
         raise ValueError("; ".join(missing_alpha_targets))
 
@@ -613,28 +681,32 @@ def main():
     if requested_label_targets:
         label_builder = PhysicsTargetBuilder(
             target_names=requested_label_targets,
-            field_mode=args.field_mode,
-            gaussian_sigma=args.gaussian_sigma,
-            eps=args.eps,
-            tx_channel=args.tx_channel,
-            normalize_each_sample=not args.no_normalize_each_sample,
-            radiodiff_pathloss_trunc=args.radiodiff_pathloss_trunc,
-            radiodiff_pathloss_max=args.radiodiff_pathloss_max,
-            radiodiff_source_power_dbm=args.radiodiff_source_power_dbm,
-            radiodiff_h=args.radiodiff_h,
-            radiodiff_border_value=args.radiodiff_border_value,
-            radiodiff_eps=args.radiodiff_eps,
-            radiodiff_smooth_sigma=args.radiodiff_smooth_sigma,
+            field_mode=opts["field_mode"],
+            gaussian_sigma=opts["gaussian_sigma"],
+            eps=opts["eps"],
+            tx_channel=opts["tx_channel"],
+            normalize_each_sample=opts["normalize_each_sample"],
+            radiodiff_pathloss_trunc=opts["radiodiff_pathloss_trunc"],
+            radiodiff_pathloss_max=opts["radiodiff_pathloss_max"],
+            radiodiff_source_power_dbm=opts["radiodiff_source_power_dbm"],
+            radiodiff_h=opts["radiodiff_h"],
+            radiodiff_border_value=opts["radiodiff_border_value"],
+            radiodiff_eps=opts["radiodiff_eps"],
+            radiodiff_smooth_sigma=opts["radiodiff_smooth_sigma"],
         ).to(device)
         label_builder.eval()
 
-    loader = get_split_loader(cfg, args.split)
-    os.makedirs(args.save_dir, exist_ok=True)
+    loader = get_split_loader(cfg, opts["split"])
+    os.makedirs(opts["save_dir"], exist_ok=True)
 
     print("[INFO] All targets are computed online; no .pt files are loaded.")
+    print(f"[INFO] Device: {device}")
+    print(f"[INFO] Target type: {opts['target_type']}")
     print(f"[INFO] Requested targets: {target_names}")
-    print(f"[INFO] Obstacle alphas: {obstacle_alphas}")
-    print(f"[INFO] Split: {args.split} | samples: {args.num_samples}")
+    print(
+        f"[INFO] Split: {opts['split']} | samples: {opts['num_samples']} "
+        f"| loader batch size: {opts['batch_size']}"
+    )
 
     saved = 0
     for batch in loader:
@@ -654,16 +726,16 @@ def main():
                     per_sample_targets.append(
                         compute_input_driven_targets(
                             x_i=x[sample_index],
-                            tx_channel=args.tx_channel,
-                            obstacle_channels=obstacle_channels,
-                            building_threshold=args.building_threshold,
-                            obstacle_alphas=obstacle_alphas,
-                            corner_sigma=args.corner_sigma,
-                            corner_posthit_decay=args.corner_posthit_decay,
-                            corner_max_corners=args.corner_max_corners,
-                            corner_response_threshold=args.corner_response_threshold,
-                            corner_nms_radius=args.corner_nms_radius,
-                            corner_harris_k=args.corner_harris_k,
+                            tx_channel=opts["tx_channel"],
+                            obstacle_channels=opts["obstacle_channels"],
+                            building_threshold=opts["building_threshold"],
+                            obstacle_alphas=opts["obstacle_alphas"],
+                            corner_sigma=opts["corner_sigma"],
+                            corner_posthit_decay=opts["corner_posthit_decay"],
+                            corner_max_corners=opts["corner_max_corners"],
+                            corner_response_threshold=opts["corner_response_threshold"],
+                            corner_nms_radius=opts["corner_nms_radius"],
+                            corner_harris_k=opts["corner_harris_k"],
                         )
                     )
 
@@ -671,24 +743,27 @@ def main():
                     if any(target_name not in sample_targets for sample_targets in per_sample_targets):
                         raise KeyError(
                             f"Online geometry target '{target_name}' was not created. "
-                            "Check --obstacle-alphas and --physics-targets."
+                            "Check physics.obstacle_alphas and physics.targets."
                         )
                     all_targets[target_name] = torch.stack(
                         [sample_targets[target_name] for sample_targets in per_sample_targets],
                         dim=0,
                     ).to(device=device)
 
-        # Preserve requested ordering.
+        # Preserve the cfg target ordering in both grid and standalone filenames.
         all_targets = {name: all_targets[name] for name in target_names}
 
         for i in range(x.size(0)):
-            if saved >= args.num_samples:
+            if saved >= opts["num_samples"]:
                 break
 
             sample_name = names[i] if names is not None else None
             stem = f"sample_{saved:03d}"
             if sample_name is not None:
                 stem += f"_{safe_stem(sample_name)}"
+
+            sample_dir = os.path.join(opts["save_dir"], stem)
+            os.makedirs(sample_dir, exist_ok=True)
 
             x_i = x[i].detach().cpu()
             y_i = y[i].detach().cpu()
@@ -697,54 +772,35 @@ def main():
                 for key, value in all_targets.items()
             }
 
-            grid_path = os.path.join(args.save_dir, f"{stem}_physics_grid.png")
-            save_sample_grid(
-                save_path=grid_path,
-                x_i=x_i,
-                y_i=y_i,
-                targets_i=targets_i,
-                input_mode=args.input_mode,
-                name=sample_name,
-                dpi=args.dpi,
-            )
-
-            if args.save_individual:
-                individual_dir = os.path.join(args.save_dir, stem)
-                os.makedirs(individual_dir, exist_ok=True)
-
-                for channel in range(x_i.shape[0]):
-                    save_single_map(
-                        os.path.join(individual_dir, f"input_ch{channel}.png"),
-                        x_i[channel],
-                        f"input ch{channel}",
-                        cmap="gray",
-                        dpi=args.dpi,
-                    )
-
-                save_single_map(
-                    os.path.join(individual_dir, "label_y.png"),
-                    y_i[0],
-                    "label y",
-                    cmap="viridis",
-                    dpi=args.dpi,
+            if opts["save_grid"]:
+                grid_path = os.path.join(sample_dir, "physics_grid.png")
+                save_sample_grid(
+                    save_path=grid_path,
+                    x_i=x_i,
+                    y_i=y_i,
+                    targets_i=targets_i,
+                    cars_input=opts["cars_input"],
+                    name=sample_name,
+                    dpi=opts["dpi"],
                 )
 
-                for target_name, target_map in targets_i.items():
-                    save_single_map(
-                        os.path.join(individual_dir, f"physics_{target_name}.png"),
-                        target_map[0],
-                        f"physics: {pretty_target_name(target_name)}",
-                        cmap="viridis",
-                        dpi=args.dpi,
-                    )
+            if opts["save_individual"]:
+                save_individual_maps(
+                    sample_dir=sample_dir,
+                    x_i=x_i,
+                    y_i=y_i,
+                    targets_i=targets_i,
+                    cars_input=opts["cars_input"],
+                    dpi=opts["dpi"],
+                )
 
-            print(f"Saved: {grid_path}")
+            print(f"Saved sample directory: {sample_dir}")
             saved += 1
 
-        if saved >= args.num_samples:
+        if saved >= opts["num_samples"]:
             break
 
-    print(f"Done. Saved {saved} sample grid(s) to: {args.save_dir}")
+    print(f"Done. Saved {saved} sampled visualization(s) to: {opts['save_dir']}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import os
 import sys
+import copy
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
@@ -17,11 +18,7 @@ from models.hrformer_regressor import HRFormerRadioMapRegressor
 
 from utils import (
     set_seed,
-    show_current_cuda_memory,
-    prepare_device,
-    is_cuda_device,
     get_amp_device_type,
-    use_amp_on_device,
     summarize_trainable_by_module,
 )
 from losses import (
@@ -39,48 +36,19 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Evaluate HRFormer for RadioMapSeer radio map regression."
     )
-
-    # Paths
-    parser.add_argument("--config-path", type=str, default="./configs/hrformer_radiomapseer.json")
+    parser.add_argument("--config-path", type=str, default="./configs/hrt.json")
     parser.add_argument("--weight-path", type=str, required=True)
-    parser.add_argument("--data-root", type=str, default=None)
     parser.add_argument("--save-root", type=str, default="./save_eval")
     parser.add_argument("--run-name", type=str, default=None)
-
-    # RadioMapSeer setting
-    parser.add_argument(
-        "--input-mode",
-        choices=["building", "cars"],
-        default="building",
-        help="building: [building, building, Tx], cars: [building, cars, Tx].",
-    )
-    parser.add_argument(
-        "--target-type",
-        choices=["DPM", "carsDPM"],
-        default=None,
-        help="If omitted: building -> DPM, cars -> carsDPM.",
-    )
     parser.add_argument("--split", choices=["train", "val", "valid", "test"], default="test")
-    parser.add_argument("--num-tx", type=int, default=None)
-    parser.add_argument("--thresh", type=float, default=None)
 
-    # Runtime
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--cuda", type=str, default="0")
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--num-workers", type=int, default=None)
-    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--persistent-workers", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
-
-    # Visualization
+    # Output controls are run-specific rather than training configuration.
     parser.add_argument("--save-pred", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save-error", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save-gt", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--cmap", type=str, default="jet")
     parser.add_argument("--error-vmax", type=float, default=0.3)
     parser.add_argument("--max-save", type=int, default=100)
-
     return parser.parse_args()
 
 
@@ -115,64 +83,84 @@ def cfg_get(config, keys, default=None):
     return cur
 
 
-def arg_or_cfg(arg_value, config, keys, default):
-    if arg_value is not None:
-        return arg_value
-    return cfg_get(config, keys, default)
-
-
-def apply_radiomapseer_overrides(cfg, args, return_name=True):
+def prepare_eval_config(cfg, return_name=True):
+    """Use the JSON configuration as the single source of data/runtime settings."""
+    cfg = copy.deepcopy(cfg)
     cfg.setdefault("data", {})
 
-    if args.data_root is not None:
-        cfg["data"]["root_dir"] = args.data_root
-    if args.num_tx is not None:
-        cfg["data"]["num_tx"] = args.num_tx
-    if args.thresh is not None:
-        cfg["data"]["thresh"] = args.thresh
-    if args.batch_size is not None:
-        cfg["data"]["batch_size"] = args.batch_size
-    if args.num_workers is not None:
-        cfg["data"]["num_workers"] = args.num_workers
+    if cfg["data"].get("root_dir") is None:
+        raise ValueError("cfg['data']['root_dir'] must be set.")
 
-    cfg["data"]["pin_memory"] = args.pin_memory
-    cfg["data"]["persistent_workers"] = args.persistent_workers
-    cfg["data"]["return_name"] = return_name
-
-    if args.input_mode == "building":
-        cfg["data"]["cars_input"] = False
-        cfg["data"]["target_type"] = args.target_type if args.target_type is not None else "DPM"
-    elif args.input_mode == "cars":
-        cfg["data"]["cars_input"] = True
-        cfg["data"]["target_type"] = args.target_type if args.target_type is not None else "carsDPM"
-    else:
-        raise ValueError(f"Unsupported input_mode: {args.input_mode}")
-
-    cfg["data"].setdefault("root_dir", None)
-    cfg["data"].setdefault("num_tx", 80)
-    cfg["data"].setdefault("thresh", 0.0)
-    cfg["data"].setdefault("batch_size", 32)
-    cfg["data"].setdefault("num_workers", 4)
-
-    if cfg["data"]["root_dir"] is None:
-        raise ValueError("RadioMapSeer path is required. Use --data-root or cfg['data']['root_dir'].")
-
+    cfg["data"]["return_name"] = bool(return_name)
     return cfg
 
 
 def resolve_options(args, cfg):
+    cars_input = bool(cfg_get(cfg, ["data", "cars_input"], False))
     return {
         "data_root": cfg_get(cfg, ["data", "root_dir"], None),
-        "input_mode": args.input_mode,
-        "cars_input": cfg_get(cfg, ["data", "cars_input"], False),
+        "input_mode": "cars" if cars_input else "building",
+        "cars_input": cars_input,
         "target_type": cfg_get(cfg, ["data", "target_type"], "DPM"),
         "split": "val" if args.split == "valid" else args.split,
         "num_tx": cfg_get(cfg, ["data", "num_tx"], 80),
         "thresh": cfg_get(cfg, ["data", "thresh"], 0.0),
         "batch_size": cfg_get(cfg, ["data", "batch_size"], 32),
         "num_workers": cfg_get(cfg, ["data", "num_workers"], 4),
-        "seed": arg_or_cfg(args.seed, cfg, ["seed"], 42),
+        "seed": cfg_get(cfg, ["seed"], 42),
     }
+
+
+def resolve_runtime(cfg):
+    """Resolve physical CUDA indices declared in cfg['runtime']['gpus']."""
+    requested = cfg_get(cfg, ["runtime", "gpus"], [0])
+    if requested is None:
+        requested = []
+    if not isinstance(requested, (list, tuple)):
+        raise TypeError("cfg['runtime']['gpus'] must be a list, e.g. [1, 2].")
+
+    gpu_ids = [int(gpu_id) for gpu_id in requested]
+    if len(gpu_ids) != len(set(gpu_ids)) or any(gpu_id < 0 for gpu_id in gpu_ids):
+        raise ValueError(f"Invalid GPU list: {gpu_ids}")
+
+    if not gpu_ids or not torch.cuda.is_available():
+        if gpu_ids and not torch.cuda.is_available():
+            print("CUDA is unavailable; falling back to CPU.")
+        return torch.device("cpu"), [], False
+
+    visible_count = torch.cuda.device_count()
+    invalid = [gpu_id for gpu_id in gpu_ids if gpu_id >= visible_count]
+    if invalid:
+        raise ValueError(
+            f"runtime.gpus={gpu_ids}, but CUDA exposes device indices 0..{visible_count - 1}. "
+            "Do not set CUDA_VISIBLE_DEVICES in the script; either unset it in the shell or "
+            "use indices relative to the visible devices."
+        )
+
+    primary_gpu = gpu_ids[0]
+    device = torch.device(f"cuda:{primary_gpu}")
+    use_amp = bool(cfg_get(cfg, ["runtime", "amp"], True))
+    return device, gpu_ids, use_amp
+
+
+def maybe_wrap_data_parallel(model, gpu_ids):
+    if len(gpu_ids) <= 1:
+        return model
+    print(f"Using torch.nn.DataParallel on GPUs: {gpu_ids} (primary: cuda:{gpu_ids[0]}).")
+    return torch.nn.DataParallel(model, device_ids=gpu_ids, output_device=gpu_ids[0])
+
+
+def unwrap_model(model):
+    return model.module if isinstance(model, torch.nn.DataParallel) else model
+
+
+def normalize_state_dict_keys(state_dict):
+    if any(key.startswith("module.") for key in state_dict):
+        return {
+            key[7:] if key.startswith("module.") else key: value
+            for key, value in state_dict.items()
+        }
+    return state_dict
 
 
 def get_split_dict(cfg):
@@ -214,7 +202,7 @@ def load_model_state(model, ckpt_path, device):
         state_dict = ckpt["state_dict"]
     else:
         state_dict = ckpt
-    model.load_state_dict(state_dict, strict=True)
+    unwrap_model(model).load_state_dict(normalize_state_dict_keys(state_dict), strict=True)
 
 
 def tensor_to_image(x):
@@ -269,40 +257,45 @@ def get_model_profile(model, weight_path=None):
     }
 
 
-def reset_cuda_peak_memory(device):
-    if torch.device(device).type == "cuda":
+def reset_cuda_peak_memory(device, gpu_ids):
+    if torch.device(device).type != "cuda":
+        return
+    for gpu_id in gpu_ids:
         torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(device)
-        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(gpu_id)
+        torch.cuda.synchronize(gpu_id)
 
 
-def get_memory_profile(device):
+def get_memory_profile(device, gpu_ids):
     if torch.device(device).type != "cuda":
         return {
             "device_type": torch.device(device).type,
-            "cuda_memory_allocated_mb": None,
-            "cuda_memory_reserved_mb": None,
-            "cuda_max_memory_allocated_mb": None,
-            "cuda_max_memory_reserved_mb": None,
+            "per_gpu": {},
         }
 
-    torch.cuda.synchronize(device)
+    per_gpu = {}
+    for gpu_id in gpu_ids:
+        torch.cuda.synchronize(gpu_id)
+        per_gpu[gpu_id] = {
+            "allocated_mb": bytes_to_mb(torch.cuda.memory_allocated(gpu_id)),
+            "reserved_mb": bytes_to_mb(torch.cuda.memory_reserved(gpu_id)),
+            "peak_allocated_mb": bytes_to_mb(torch.cuda.max_memory_allocated(gpu_id)),
+            "peak_reserved_mb": bytes_to_mb(torch.cuda.max_memory_reserved(gpu_id)),
+        }
     return {
         "device_type": "cuda",
-        "cuda_memory_allocated_mb": bytes_to_mb(torch.cuda.memory_allocated(device)),
-        "cuda_memory_reserved_mb": bytes_to_mb(torch.cuda.memory_reserved(device)),
-        "cuda_max_memory_allocated_mb": bytes_to_mb(torch.cuda.max_memory_allocated(device)),
-        "cuda_max_memory_reserved_mb": bytes_to_mb(torch.cuda.max_memory_reserved(device)),
+        "per_gpu": per_gpu,
     }
 
 
-def sync_if_cuda(device):
+def sync_if_cuda(device, gpu_ids):
     if torch.device(device).type == "cuda":
-        torch.cuda.synchronize(device)
+        for gpu_id in gpu_ids:
+            torch.cuda.synchronize(gpu_id)
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, args, save_folder, use_amp=False):
+def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
     model.eval()
     pred_all = []
     gt_all = []
@@ -323,18 +316,18 @@ def evaluate(model, loader, device, args, save_folder, use_amp=False):
     total_forward_time_sec = 0.0
     total_infer_samples = 0
 
-    reset_cuda_peak_memory(device)
+    reset_cuda_peak_memory(device, gpu_ids)
 
     for batch in tqdm(loader):
         x, y, names = unpack_batch(batch, device)
 
         # Measure only model forward time. This excludes data loading, CPU transfer,
         # metric computation, and PNG saving overhead.
-        sync_if_cuda(device)
+        sync_if_cuda(device, gpu_ids)
         start_time = time.perf_counter()
         with autocast(device_type=amp_device_type, enabled=use_amp):
             pred = model(x)
-        sync_if_cuda(device)
+        sync_if_cuda(device, gpu_ids)
         elapsed = time.perf_counter() - start_time
 
         batch_size = x.size(0)
@@ -388,7 +381,7 @@ def evaluate(model, loader, device, args, save_folder, use_amp=False):
         if total_infer_samples > 0
         else float("nan")
     )
-    memory_profile = get_memory_profile(device)
+    memory_profile = get_memory_profile(device, gpu_ids)
 
     return {
         "MAE": float(MAE(gt_all, pred_all)),
@@ -406,13 +399,12 @@ def evaluate(model, loader, device, args, save_folder, use_amp=False):
 
 def main():
     args = parse_args()
-    cfg = load_config(args.config_path)
-    cfg = apply_radiomapseer_overrides(cfg, args, return_name=True)
+    cfg = prepare_eval_config(load_config(args.config_path), return_name=True)
     opts = resolve_options(args, cfg)
 
     set_seed(opts["seed"])
-    device = prepare_device(args.cuda)
-    use_amp = use_amp_on_device(device, args.amp)
+    device, gpu_ids, use_amp = resolve_runtime(cfg)
+    runtime_gpus = gpu_ids if gpu_ids else ["cpu"]
 
     split_dict = get_split_dict(cfg)
     dataset, loader = select_split(split_dict, opts["split"])
@@ -422,22 +414,33 @@ def main():
     print(f"Input mode: {opts['input_mode']}")
     print(f"Target    : {opts['target_type']}")
 
-    model = HRFormerRadioMapRegressor(cfg).to(device)
-    load_model_state(model, args.weight_path, device)
-    summarize_trainable_by_module(model)
-    model_profile = get_model_profile(model, args.weight_path)
+    base_model = HRFormerRadioMapRegressor(cfg).to(device)
+    load_model_state(base_model, args.weight_path, device)
+    summarize_trainable_by_module(base_model)
+    model_profile = get_model_profile(base_model, args.weight_path)
+    model = maybe_wrap_data_parallel(base_model, gpu_ids)
 
     run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
     save_folder = os.path.join(args.save_root, run_name)
     os.makedirs(save_folder, exist_ok=True)
 
-    metrics = evaluate(model=model, loader=loader, device=device, args=args, save_folder=save_folder, use_amp=use_amp)
+    metrics = evaluate(
+        model=model,
+        loader=loader,
+        device=device,
+        gpu_ids=gpu_ids,
+        args=args,
+        save_folder=save_folder,
+        use_amp=use_amp,
+    )
 
     log_path = os.path.join(save_folder, "log.txt")
     with open(log_path, "a") as f:
         f.write("model: HRFormerRadioMapRegressor\n")
         f.write(f"config_path: {args.config_path}\n")
         f.write(f"weight_path: {args.weight_path}\n")
+        f.write(f"gpus: {runtime_gpus}\n")
+        f.write(f"amp: {use_amp}\n")
         f.write(f"data_root: {opts['data_root']}\n")
         f.write(f"split: {opts['split']}\n")
         f.write(f"input_mode: {opts['input_mode']}\n")
@@ -455,13 +458,18 @@ def main():
         f.write("\nRuntime Profile\n")
         f.write(f"num_inference_samples: {metrics['num_inference_samples']}\n")
         f.write(f"total_forward_time: {metrics['total_forward_time_sec']:.6f} sec\n")
-        f.write(f"avg_inference_time_per_sample: {metrics['avg_inference_time_ms_per_sample']:.6f} ms/sample\n")
+        f.write(
+            f"avg_inference_time_per_sample: "
+            f"{metrics['avg_inference_time_ms_per_sample']:.6f} ms/sample\n"
+        )
         f.write(f"device_type: {metrics['device_type']}\n")
-        if metrics["cuda_max_memory_allocated_mb"] is not None:
-            f.write(f"cuda_memory_allocated_after_eval: {metrics['cuda_memory_allocated_mb']:.2f} MB\n")
-            f.write(f"cuda_memory_reserved_after_eval: {metrics['cuda_memory_reserved_mb']:.2f} MB\n")
-            f.write(f"cuda_peak_memory_allocated: {metrics['cuda_max_memory_allocated_mb']:.2f} MB\n")
-            f.write(f"cuda_peak_memory_reserved: {metrics['cuda_max_memory_reserved_mb']:.2f} MB\n")
+        for gpu_id, memory in metrics["per_gpu"].items():
+            f.write(
+                f"cuda:{gpu_id} allocated_after_eval: {memory['allocated_mb']:.2f} MB | "
+                f"reserved_after_eval: {memory['reserved_mb']:.2f} MB | "
+                f"peak_allocated: {memory['peak_allocated_mb']:.2f} MB | "
+                f"peak_reserved: {memory['peak_reserved_mb']:.2f} MB\n"
+            )
         f.write("\nResults\n")
         f.write(f"MAE : {metrics['MAE']:.4f}\n")
         f.write(f"RMSE : {metrics['RMSE']:.4f}\n")
@@ -480,9 +488,12 @@ def main():
     print(f"Model size(param+buffer): {model_profile['model_size_mb']:.2f} MB")
     print("\nRuntime Profile")
     print(f"Avg inference time: {metrics['avg_inference_time_ms_per_sample']:.6f} ms/sample")
-    if metrics["cuda_max_memory_allocated_mb"] is not None:
-        print(f"CUDA peak memory allocated: {metrics['cuda_max_memory_allocated_mb']:.2f} MB")
-        print(f"CUDA peak memory reserved: {metrics['cuda_max_memory_reserved_mb']:.2f} MB")
+    for gpu_id, memory in metrics["per_gpu"].items():
+        print(
+            f"CUDA:{gpu_id} peak memory: "
+            f"{memory['peak_allocated_mb']:.2f} MB allocated, "
+            f"{memory['peak_reserved_mb']:.2f} MB reserved"
+        )
     print(f"Saved to: {save_folder}")
 
 

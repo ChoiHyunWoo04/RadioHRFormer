@@ -7,10 +7,8 @@ def MAE(y_pred, y_true):
     loss = torch.mean(torch.abs(torch.sub(y_true, y_pred)))
     return loss
 
-def MAE_MSE(y_pred, y_true):
-    loss_mae = torch.mean(torch.abs(y_pred - y_true))
-    loss_mse = torch.mean(((y_pred - y_true) ** 2))
-    loss = (loss_mae + loss_mse) / 2
+def MSE(y_pred, y_true):
+    loss = torch.mean(((y_pred - y_true) ** 2))
     return loss
 
 

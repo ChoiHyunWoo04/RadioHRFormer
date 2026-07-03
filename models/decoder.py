@@ -35,7 +35,7 @@ class RegressionDecoder(nn.Module):
         return self.conv(x)  # (B, 1, 256, 256)
 
 class ConvBNAct(nn.Module):
-    def __init__(self, in_channels, out_channels, act_layer=nn.GELU):
+    def __init__(self, in_channels, out_channels, act_layer=nn.ReLU):
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),

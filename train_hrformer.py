@@ -1,8 +1,7 @@
 import os
 import sys
+import copy
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import argparse
 import json
@@ -19,11 +18,7 @@ from models.hrformer_regressor import HRFormerRadioMapRegressor, load_physics_pr
 
 from utils import (
     set_seed,
-    show_current_cuda_memory,
-    prepare_device,
-    is_cuda_device,
     get_amp_device_type,
-    use_amp_on_device,
     summarize_trainable_by_module,
 )
 from losses import (
@@ -42,52 +37,13 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Train HRFormer for RadioMapSeer radio map regression."
     )
-
-    # Paths
-    parser.add_argument("--config-path", type=str, default="./configs/hrformer_radiomapseer.json")
-    parser.add_argument("--data-root", type=str, default=None, help="RadioMapSeer root directory.")
+    parser.add_argument("--config-path", type=str, default="./configs/hrt.json")
     parser.add_argument("--save-root", type=str, default="./save")
     parser.add_argument("--run-name", type=str, default=None)
-
-    # RadioMapSeer setting
-    parser.add_argument(
-        "--input-mode",
-        choices=["building", "cars"],
-        default="building",
-        help="building: [building, building, Tx], cars: [building, cars, Tx].",
-    )
-    parser.add_argument(
-        "--target-type",
-        choices=["DPM", "carsDPM"],
-        default=None,
-        help="If omitted: building -> DPM, cars -> carsDPM.",
-    )
-    parser.add_argument("--num-tx", type=int, default=None)
-    parser.add_argument("--thresh", type=float, default=None)
-
-    # Training
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--weight-decay", type=float, default=None)
-    parser.add_argument("--warmup-epochs", type=int, default=None)
-    parser.add_argument("--min-lr", type=float, default=None)
-    parser.add_argument("--loss", choices=["l1", "mse", "radiomamba"], default=None)
-
-    # Runtime
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--cuda", type=str, default="0")
-    parser.add_argument("--num-workers", type=int, default=None)
-    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--persistent-workers", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
-
-    # Checkpoint / evaluation
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--physics-pretrained", type=str, default=None)
     parser.add_argument("--eval-split", choices=["val", "valid", "test"], default="val")
-    parser.add_argument("--save-every", type=int, default=10)
-
+    parser.add_argument("--save-every", type=int, default=0)
     return parser.parse_args()
 
 
@@ -122,72 +78,88 @@ def cfg_get(config, keys, default=None):
     return cur
 
 
-def arg_or_cfg(arg_value, config, keys, default):
-    if arg_value is not None:
-        return arg_value
-    return cfg_get(config, keys, default)
-
-
-def apply_radiomapseer_overrides(cfg, args, return_name=False):
-    """Apply CLI overrides to cfg['data'] so rms_dataset.build_dataloaders(cfg) is the only loader path."""
+def prepare_train_config(cfg, return_name=False):
+    """Use the JSON configuration as the single source of data/training settings."""
+    cfg = copy.deepcopy(cfg)
     cfg.setdefault("data", {})
+    cfg.setdefault("train", {})
 
-    if args.data_root is not None:
-        cfg["data"]["root_dir"] = args.data_root
-    if args.num_tx is not None:
-        cfg["data"]["num_tx"] = args.num_tx
-    if args.thresh is not None:
-        cfg["data"]["thresh"] = args.thresh
-    if args.batch_size is not None:
-        cfg["data"]["batch_size"] = args.batch_size
-    if args.num_workers is not None:
-        cfg["data"]["num_workers"] = args.num_workers
+    if cfg["data"].get("root_dir") is None:
+        raise ValueError("cfg['data']['root_dir'] must be set.")
 
-    cfg["data"]["pin_memory"] = args.pin_memory
-    cfg["data"]["persistent_workers"] = args.persistent_workers
-    cfg["data"]["return_name"] = return_name
-
-    if args.input_mode == "building":
-        cfg["data"]["cars_input"] = False
-        cfg["data"]["target_type"] = args.target_type if args.target_type is not None else "DPM"
-    elif args.input_mode == "cars":
-        cfg["data"]["cars_input"] = True
-        cfg["data"]["target_type"] = args.target_type if args.target_type is not None else "carsDPM"
-    else:
-        raise ValueError(f"Unsupported input_mode: {args.input_mode}")
-
-    # Safe defaults for a minimal config.
-    cfg["data"].setdefault("root_dir", None)
-    cfg["data"].setdefault("num_tx", 80)
-    cfg["data"].setdefault("thresh", 0.0)
-    cfg["data"].setdefault("batch_size", 32)
-    cfg["data"].setdefault("num_workers", 4)
-
-    if cfg["data"]["root_dir"] is None:
-        raise ValueError("RadioMapSeer path is required. Use --data-root or cfg['data']['root_dir'].")
-
+    cfg["data"]["return_name"] = bool(return_name)
     return cfg
 
 
-def resolve_options(args, cfg):
-    opts = {
+def resolve_options(cfg):
+    return {
         "data_root": cfg_get(cfg, ["data", "root_dir"], None),
-        "input_mode": args.input_mode,
-        "cars_input": cfg_get(cfg, ["data", "cars_input"], False),
         "target_type": cfg_get(cfg, ["data", "target_type"], "DPM"),
+        "input_mode": "cars" if cfg_get(cfg, ["data", "target_type"], "DPM") == "carsDPM" else "building",
         "num_tx": cfg_get(cfg, ["data", "num_tx"], 80),
         "thresh": cfg_get(cfg, ["data", "thresh"], 0.0),
         "batch_size": cfg_get(cfg, ["data", "batch_size"], 32),
         "num_workers": cfg_get(cfg, ["data", "num_workers"], 4),
-        "epochs": arg_or_cfg(args.epochs, cfg, ["train", "epochs"], 200),
-        "lr": arg_or_cfg(args.lr, cfg, ["train", "lr"], 1e-4),
-        "weight_decay": arg_or_cfg(args.weight_decay, cfg, ["train", "weight_decay"], 1e-4),
-        "warmup_epochs": arg_or_cfg(args.warmup_epochs, cfg, ["train", "warmup_epochs"], 5),
-        "min_lr": arg_or_cfg(args.min_lr, cfg, ["train", "min_lr"], 1e-6),
-        "loss": arg_or_cfg(args.loss, cfg, ["train", "loss"], "radiomamba"),
-        "seed": arg_or_cfg(args.seed, cfg, ["seed"], 42),
+        "epochs": cfg_get(cfg, ["train", "epochs"], 200),
+        "lr": cfg_get(cfg, ["train", "lr"], 1e-4),
+        "weight_decay": cfg_get(cfg, ["train", "weight_decay"], 1e-4),
+        "warmup_epochs": cfg_get(cfg, ["train", "warmup_epochs"], 5),
+        "min_lr": cfg_get(cfg, ["train", "min_lr"], 1e-6),
+        "loss": cfg_get(cfg, ["train", "loss"], "joint"),
+        "seed": cfg_get(cfg, ["seed"], 42),
     }
-    return opts
+
+
+def resolve_runtime(cfg):
+    """Resolve physical CUDA indices declared in cfg['runtime']['gpus']."""
+    requested = cfg_get(cfg, ["runtime", "gpus"], [0])
+    if requested is None:
+        requested = []
+    if not isinstance(requested, (list, tuple)):
+        raise TypeError("cfg['runtime']['gpus'] must be a list, e.g. [1, 2].")
+
+    gpu_ids = [int(gpu_id) for gpu_id in requested]
+    if len(gpu_ids) != len(set(gpu_ids)) or any(gpu_id < 0 for gpu_id in gpu_ids):
+        raise ValueError(f"Invalid GPU list: {gpu_ids}")
+
+    if not gpu_ids or not torch.cuda.is_available():
+        if gpu_ids and not torch.cuda.is_available():
+            print("CUDA is unavailable; falling back to CPU.")
+        return torch.device("cpu"), [], False
+
+    visible_count = torch.cuda.device_count()
+    invalid = [gpu_id for gpu_id in gpu_ids if gpu_id >= visible_count]
+    if invalid:
+        raise ValueError(
+            f"runtime.gpus={gpu_ids}, but CUDA exposes device indices 0..{visible_count - 1}. "
+            "Do not set CUDA_VISIBLE_DEVICES in the script; either unset it in the shell or "
+            "use indices relative to the visible devices."
+        )
+
+    primary_gpu = gpu_ids[0]
+    device = torch.device(f"cuda:{primary_gpu}")
+    use_amp = bool(cfg_get(cfg, ["runtime", "amp"], True))
+    return device, gpu_ids, use_amp
+
+
+def maybe_wrap_data_parallel(model, gpu_ids):
+    if len(gpu_ids) <= 1:
+        return model
+    print(f"Using torch.nn.DataParallel on GPUs: {gpu_ids} (primary: cuda:{gpu_ids[0]}).")
+    return torch.nn.DataParallel(model, device_ids=gpu_ids, output_device=gpu_ids[0])
+
+
+def unwrap_model(model):
+    return model.module if isinstance(model, torch.nn.DataParallel) else model
+
+
+def normalize_state_dict_keys(state_dict):
+    if any(key.startswith("module.") for key in state_dict):
+        return {
+            key[7:] if key.startswith("module.") else key: value
+            for key, value in state_dict.items()
+        }
+    return state_dict
 
 
 def get_split_dict(cfg):
@@ -360,7 +332,7 @@ def save_checkpoint(model, optimizer, epoch, metrics, opts, save_path):
     torch.save(
         {
             "epoch": epoch,
-            "model": model.state_dict(),
+            "model": unwrap_model(model).state_dict(),
             "optimizer": optimizer.state_dict(),
             "metrics": metrics,
             "options": opts,
@@ -377,18 +349,18 @@ def load_model_state(model, ckpt_path, device):
         state_dict = ckpt["state_dict"]
     else:
         state_dict = ckpt
-    model.load_state_dict(state_dict, strict=True)
+    unwrap_model(model).load_state_dict(normalize_state_dict_keys(state_dict), strict=True)
 
 
 def main():
     args = parse_args()
-    cfg = load_config(args.config_path)
-    cfg = apply_radiomapseer_overrides(cfg, args, return_name=False)
-    opts = resolve_options(args, cfg)
+    cfg = prepare_train_config(load_config(args.config_path), return_name=False)
+    opts = resolve_options(cfg)
 
     set_seed(opts["seed"])
-    device = prepare_device(args.cuda)
-    use_amp = use_amp_on_device(device, args.amp)
+    device, gpu_ids, use_amp = resolve_runtime(cfg)
+    opts["gpus"] = gpu_ids if gpu_ids else ["cpu"]
+    opts["amp"] = use_amp
 
     split_dict = get_split_dict(cfg)
     train_loader = split_dict["train_loader"]
@@ -406,8 +378,8 @@ def main():
     print(f"Input mode: {opts['input_mode']}")
     print(f"Target    : {opts['target_type']}")
 
-    model = HRFormerRadioMapRegressor(cfg).to(device)
-    
+    base_model = HRFormerRadioMapRegressor(cfg).to(device)
+
     if args.resume is not None and args.physics_pretrained is not None:
         raise ValueError(
             "Use either --resume or --physics-pretrained, not both. "
@@ -417,7 +389,7 @@ def main():
 
     if args.physics_pretrained is not None:
         load_physics_pretrained_for_downstream(
-            model=model,
+            model=base_model,
             ckpt_path=args.physics_pretrained,
             device=device,
             verbose=True,
@@ -425,10 +397,11 @@ def main():
         print(f"Loaded physics-pretrained initialization: {args.physics_pretrained}")
 
     if args.resume is not None:
-        load_model_state(model, args.resume, device)
+        load_model_state(base_model, args.resume, device)
         print(f"Loaded checkpoint: {args.resume}")
 
-    summarize_trainable_by_module(model)
+    summarize_trainable_by_module(base_model)
+    model = maybe_wrap_data_parallel(base_model, gpu_ids)
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -437,7 +410,7 @@ def main():
         betas=(0.9, 0.999),
     )
     loss_fn = build_loss(opts["loss"]).to(device)
-    scaler = GradScaler("cuda", enabled=use_amp)
+    scaler = GradScaler(device.type, enabled=use_amp)
 
     train_losses = []
     val_losses = []
@@ -447,12 +420,13 @@ def main():
     with open(log_path, "a") as f:
         f.write("model: HRFormerRadioMapRegressor\n")
         f.write(f"config_path: {args.config_path}\n")
+        f.write(f"gpus: {opts['gpus']}\n")
+        f.write(f"amp: {opts['amp']}\n")
         f.write(f"data_root: {opts['data_root']}\n")
         f.write(f"input_mode: {opts['input_mode']}\n")
-        f.write(f"cars_input: {opts['cars_input']}\n")
         f.write(f"target_type: {opts['target_type']}\n")
         f.write(f"num_tx: {opts['num_tx']}\n")
-        f.write(f"batch_size: {opts['batch_size']}\n")
+        f.write(f"batch_size_global: {opts['batch_size']}\n")
         f.write(f"epochs: {opts['epochs']}\n")
         f.write(f"lr: {opts['lr']}\n")
         f.write(f"weight_decay: {opts['weight_decay']}\n")
@@ -498,12 +472,33 @@ def main():
 
         if val_metrics["MAE"] < best_mae:
             best_mae = val_metrics["MAE"]
-            save_checkpoint(model, optimizer, epoch + 1, val_metrics, opts, os.path.join(weight_dir, "best.pth"))
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch + 1,
+                val_metrics,
+                opts,
+                os.path.join(weight_dir, "best.pth"),
+            )
 
-        #if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
-        #    save_checkpoint(model, optimizer, epoch + 1, val_metrics, opts, os.path.join(weight_dir, f"epoch_{epoch + 1:03d}.pth"))
+        if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch + 1,
+                val_metrics,
+                opts,
+                os.path.join(weight_dir, f"epoch_{epoch + 1:03d}.pth"),
+            )
 
-    save_checkpoint(model, optimizer, opts["epochs"], last_metrics, opts, os.path.join(weight_dir, "last.pth"))
+    save_checkpoint(
+        model,
+        optimizer,
+        opts["epochs"],
+        last_metrics,
+        opts,
+        os.path.join(weight_dir, "last.pth"),
+    )
     save_loss_curve(train_losses, val_losses, os.path.join(save_folder, "loss.png"))
 
     print("\nFinished training")

@@ -1,37 +1,30 @@
 {
   "seed": 42,
-
+  "runtime": {"gpus": [2], "amp": true},
   "data": {
     "root_dir": "/home/ailab/Desktop/data/radiomapseer/",
     "image_size": 256,
     "num_tx": 80,
-
-    "cars_input": false,
-    "target_type": "DPM",
-
+    "target_type": "carsDPM",
     "thresh": 0.0,
     "batch_size": 32,
     "num_workers": 4,
     "pin_memory": true,
     "persistent_workers": true,
     "return_name": false,
-
     "use_tx_gaussian_map": false,
     "tx_gaussian_sigma": 6.0
   },
-
   "model": {
     "name": "HRFormerRadioMapRegressor",
     "in_channels": 3,
     "out_channels": 1,
     "branch_index": 0,
     "use_stem_skip": true,
-
     "norm_cfg": {
       "type": "BN",
       "requires_grad": true
     },
-
     "backbone": {
       "type": "HRT",
       "variant": "hrt_small",
@@ -72,7 +65,7 @@
         },
 
         "stage4": {
-          "num_modules": 2,
+          "num_modules": 4,
           "num_branches": 4,
           "block": "TRANSFORMER_BLOCK",
           "num_blocks": [2, 2, 2, 2],
@@ -98,25 +91,36 @@
   "pretrain": {
     "epochs": 100,
     "lr": 0.0001,
-    "weight_decay": 0.0001,
+    "weight_decay": 0.0005,
     "warmup_epochs": 5,
-    "min_lr": 0.000001
+    "min_lr": 1e-06
   },
 
   "physics": {
-    "targets": ["grad", "lap", "los", "obstacle"],
+    "targets": ["radial_gain","obstacle_saturating_a005"],
     "field_mode": "normalized_power",
     "gaussian_sigma": 2.0,
     "tx_channel": -1,
-    "building_threshold": 0.5
+    "building_threshold": 0.5,
+    "obstacle_channels": [0,1],
+    "ray_stride": 1,
+    "invert_obstacle_targets": true,
+    "geo_precompute_root": null,
+    "geo_mode_name": null,
+    "radiodiff_pathloss_trunc": -147.0,
+    "radiodiff_pathloss_max": -47.0,
+    "radiodiff_source_power_dbm": 23.0,
+    "radiodiff_h": 1.0,
+    "radiodiff_border_value": 1.0,
+    "radiodiff_eps": 1e-30,
+    "radiodiff_smooth_sigma": 0.9
   },
-
   "train": {
     "epochs": 100,
     "lr": 0.0001,
     "weight_decay": 0.0001,
     "warmup_epochs": 5,
-    "min_lr": 0.000001,
+    "min_lr": 1e-06,
     "loss": "joint"
   }
 }

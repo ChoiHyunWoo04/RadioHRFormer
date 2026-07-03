@@ -1,79 +1,39 @@
 # visualization
-python tools/visualize_physics_targets.py \
+python visualize_physics_targets.py --config-path ./configs/hrt.json
+
+
+# precompute
+python tools/precompute_obstacle_targets.py \
   --config-path ./configs/hrt.json \
   --data-root /home/ailab/Desktop/data/radiomapseer \
+  --save-root ./data/precomputed_obstacle \
   --input-mode cars \
   --target-type carsDPM \
-  --split train \
-  --physics-targets grad,lap,singularity,los,obstacle \
-  --geo-precompute-root ./data/precomputed_geo \
-  --save-dir ./save/visual_physics_targets \
-  --num-samples 4 \
-  --tx-channel 2
+  --splits train,val,test \
+  --tx-channel 2 \
+  --obstacle-channels 0,1 \
+  --dtype float16
 
 
 # pretrain
-python train_hrformer_physics_pretrain.py \
+python pretrain_hrformer.py \
   --config-path ./configs/hrt.json \
-  --data-root /home/ailab/Desktop/data/radiomapseer \
-  --input-mode building \
-  --target-type DPM \
-  --physics-targets grad,lap,singularity,los,obstacle \
-  --geo-precompute-root ./data/precomputed_geo \
-  --epochs 200 \
-  --batch-size 32 \
-  --tx-channel 2
-
-python train_hrformer_physics_pretrain.py \
-  --config-path ./configs/hrt.json \
-  --data-root /home/ailab/Desktop/data/radiomapseer \
-  --input-mode cars \
-  --target-type carsDPM \
-  --physics-targets grad,lap,singularity,los,obstacle \
-  --geo-precompute-root ./data/precomputed_geo \
-  --epochs 100 \
-  --batch-size 32 \
-  --tx-channel 2
+  --save-root ./save_pretrain
 
 # train with pretrained weights
 python train_hrformer.py \
   --config-path ./configs/hrt.json \
-  --data-root /path/to/RadioMapSeer \
-  --input-mode building \
-  --target-type DPM \
-  --physics-pretrained ./save_pretrain/physics_run/weight/best.pth \
-  --run-name hrformer_physics_ft \
-  --cuda 0
-
-python train_hrformer.py \
-  --config-path ./configs/hrt.json \
-  --data-root /home/ailab/Desktop/data/radiomapseer/ \
-  --input-mode cars \
-  --target-type carsDPM \
-  --physics-pretrained ./save_pretrain/physics_run/weight/best.pth \
-  --run-name hrformer_physics_ft
+  --physics-pretrained ./save_pretrain//weight/best.pth \
+  --save-root ./save
 
 # train with random init
 python train_hrformer.py \
   --config-path ./configs/hrt.json \
-  --data-root /path/to/RadioMapSeer \
-  --input-mode building \
-  --epochs 200 \
-  --batch-size 32 \
-  --cuda 0
-
-python train_hrformer.py \
-  --config-path ./configs/hrt.json \
-  --data-root /path/to/RadioMapSeer \
-  --input-mode cars \
-  --epochs 200 \
-  --batch-size 32 \
-  --cuda 0
+  --save-root ./save
 
 # evaluation
 python evaluate_hrformer.py \
   --config-path ./configs/hrt.json \
-  --data-root /home/ailab/Desktop/data/radiomapseer/ \
-  --weight-path ./save/cars_run/weight/best.pth \
-  --input-mode cars \
-  --split test
+  --weight-path /path/to/best.pth \
+  --split test \
+  --save-root ./save_eval

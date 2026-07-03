@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.hrformer.hrt import HRT
-from models.hrformer.hilo_hrt import HiLoHRT
 from models.decoder import RegressionDecoder, HRFormerSkipDecoder, MultiHeadPhysicsDecoder
 
 

@@ -15,11 +15,14 @@ class PhysicsTargetBuilder(nn.Module):
         lap: |Delta u|, second-order local curvature of the label-derived field.
         singularity: RadioDiff-k2-inspired inverted negative-k2 map.
         radial_gain: label-free log-distance Tx gain prior computed online from x.
-        los: legacy Tx-to-pixel line-of-sight visibility map.
-        obstacle: legacy obstacle-intersection target (kept for backward compatibility).
         obstacle_sum: precomputed normalized ray-obstruction integral.
         obstacle_saturating_a003: precomputed 1-exp(-0.03 * obstruction length).
         obstacle_saturating_a005: precomputed 1-exp(-0.05 * obstruction length).
+
+    Obstacle inversion:
+        Set invert_obstacle_targets=True to transform any loaded obstacle map
+        into 1 - map. This turns obstruction intensity into a transmission-like
+        prior: high on unobstructed paths and low after stronger blockage.
 
     Expected input layout:
         cars mode     : [building, cars, Tx]
@@ -41,17 +44,9 @@ class PhysicsTargetBuilder(nn.Module):
 
     SINGULARITY_ALIASES = {
         "singularity",
-        "em_singularity",
-        "rk2_singularity",
-        "radiodiff_k2_inv",
-        "radiodiff_k2_invert",
-        "rk2_inv",
-        "rk2_neg_inv",
     }
 
     PRECOMPUTED_GEO_TARGETS = {
-        "los",
-        "obstacle",
         "obstacle_sum",
         "obstacle_saturating_a003",
         "obstacle_saturating_a005",
@@ -62,8 +57,6 @@ class PhysicsTargetBuilder(nn.Module):
         "lap",
         "singularity",
         "radial_gain",
-        "los",
-        "obstacle",
         "obstacle_sum",
         "obstacle_saturating_a003",
         "obstacle_saturating_a005",
@@ -71,7 +64,7 @@ class PhysicsTargetBuilder(nn.Module):
 
     def __init__(
         self,
-        target_names: Iterable[str] = ("grad", "lap", "singularity"),
+        target_names: Iterable[str] = ("radial_gain", "obstacle_saturating_a005"),
         field_mode: str = "normalized_power",
         gaussian_sigma: float = 2.0,
         eps: float = 1e-4,
@@ -80,6 +73,7 @@ class PhysicsTargetBuilder(nn.Module):
         obstacle_channels=(0, 1),
         normalize_each_sample: bool = True,
         ray_stride: int = 1,
+        invert_obstacle_targets: bool = False,
         radiodiff_pathloss_trunc: float = -147.0,
         radiodiff_pathloss_max: float = -47.0,
         radiodiff_source_power_dbm: float = 23.0,
@@ -105,6 +99,7 @@ class PhysicsTargetBuilder(nn.Module):
         self.obstacle_channels = tuple(int(c) for c in obstacle_channels)
         self.normalize_each_sample = bool(normalize_each_sample)
         self.ray_stride = max(1, int(ray_stride))
+        self.invert_obstacle_targets = bool(invert_obstacle_targets)
 
         self.radiodiff_pathloss_trunc = float(radiodiff_pathloss_trunc)
         self.radiodiff_pathloss_max = float(radiodiff_pathloss_max)
@@ -426,7 +421,6 @@ class PhysicsTargetBuilder(nn.Module):
         device = x.device
         yy_tx, xx_tx = self._tx_centers(tx)
 
-        los = torch.ones((b, 1, h, w), device=device, dtype=x.dtype)
         obs = torch.zeros((b, 1, h, w), device=device, dtype=x.dtype)
         ys = torch.arange(0, h, self.ray_stride, device=device)
         xs = torch.arange(0, w, self.ray_stride, device=device)
@@ -443,12 +437,10 @@ class PhysicsTargetBuilder(nn.Module):
                     cc = torch.linspace(x0, x1, n, device=device).round().long().clamp(0, w - 1)
                     hit = obstacle_mask[bi, 0, rr, cc].sum()
                     obs[bi, 0, y1, x1] = hit
-                    los[bi, 0, y1, x1] = 1.0 if hit <= 0 else 0.0
 
         if self.ray_stride > 1:
-            los = F.interpolate(los, size=(h, w), mode="nearest")
             obs = F.interpolate(obs, size=(h, w), mode="bilinear", align_corners=False)
-        return los, obs
+        return obs
 
     def forward(self, x, y, names=None) -> Dict[str, torch.Tensor]:
         target_names = self.normalize_target_names(self.target_names)
@@ -496,12 +488,10 @@ class PhysicsTargetBuilder(nn.Module):
             else:
                 # Online fallback for debugging only. Full training should use
                 # precomputed targets because ray traversal is expensive.
-                los, obstacle_raw = self._visibility_and_obstacle(x.float())
+                obstacle_raw = self._visibility_and_obstacle(x.float())
                 obstacle_sum = self._minmax(obstacle_raw)
 
                 geo_targets = {
-                    "los": los.to(dtype=x.dtype),
-                    "obstacle": obstacle_sum.to(dtype=x.dtype),
                     "obstacle_sum": obstacle_sum.to(dtype=x.dtype),
                     "obstacle_saturating_a003": (
                         1.0 - torch.exp(-0.03 * obstacle_raw)
@@ -512,7 +502,17 @@ class PhysicsTargetBuilder(nn.Module):
                 }
 
             for name in requested_geo:
-                targets[name] = geo_targets[name]
+                target = geo_targets[name]
+
+                # Stored obstacle maps are all bounded in [0, 1].
+                # In inversion mode, convert obstruction intensity into a
+                # transmission-like propagation prior:
+                #   1.0 -> unobstructed / LoS-like ray
+                #   0.0 -> most strongly obstructed ray in the stored scale
+                if self.invert_obstacle_targets:
+                    target = 1.0 - target.clamp(0.0, 1.0)
+
+                targets[name] = target
 
         return targets
 
@@ -522,11 +522,11 @@ class PhysicsPretrainLoss(nn.Module):
     """Multi-task loss for physics-map pretraining.
 
     Regression targets:
-        grad, lap, radial_gain, obstacle, obstacle_sum,
+        grad, lap, radial_gain, obstacle_sum,
         obstacle_saturating_a003, obstacle_saturating_a005
 
     BCE targets:
-        los, singularity
+        singularity
     """
 
     def __init__(

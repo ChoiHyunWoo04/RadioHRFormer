@@ -31,13 +31,8 @@ class RadioMapSeerDataset(Dataset):
         maps_inds=None,
         num_tx: int = 80,
         target_type: str = "DPM",
-        cars_input: bool = False,
         thresh: float = 0.0,
         return_name: bool = True,
-        augment: bool = False,
-        crop_scale=(0.8, 1.0),
-        hflip_prob: float = 0.5,
-        vflip_prob: float = 0.5,
         use_tx_gaussian_map: bool = True,
         tx_gaussian_sigma: float = 6.0,
     ):
@@ -68,22 +63,16 @@ class RadioMapSeerDataset(Dataset):
         self.root_dir = root_dir
         self.num_tx = num_tx
         self.target_type = target_type
-        self.cars_input = cars_input
         self.thresh = thresh
         self.return_name = return_name
 
-        self.augment = augment
-        self.crop_scale = crop_scale
-        self.hflip_prob = hflip_prob
-        self.vflip_prob = vflip_prob
-        
         self.use_tx_gaussian_map = use_tx_gaussian_map
         self.tx_gaussian_sigma = tx_gaussian_sigma
 
         self.dir_buildings = os.path.join(root_dir, "png", "buildings_complete")
         self.dir_tx = os.path.join(root_dir, "png", "antennas")
         self.dir_gain = os.path.join(root_dir, "gain", target_type)
-        self.dir_cars = os.path.join(root_dir, "png", "cars") if cars_input else None
+        self.dir_cars = os.path.join(root_dir, "png", "cars") if target_type == "carsDPM" else None
 
         self.height = 256
         self.width = 256
@@ -139,58 +128,6 @@ class RadioMapSeerDataset(Dataset):
 
         return gaussian
 
-    def _augment_xy(self, x: torch.Tensor, y: torch.Tensor):
-        """
-        Apply the same square random resized crop and flips to x and y.
-
-        x: [3, H, W]
-        y: [1, H, W]
-        """
-        '''_, h, w = x.shape
-
-        min_scale, max_scale = self.crop_scale
-        scale = float(torch.empty(1).uniform_(min_scale, max_scale).item())
-
-        # 정사각형 crop
-        base_size = min(h, w)
-        crop_size = max(1, int(round(base_size * scale)))
-
-        top = int(torch.randint(0, h - crop_size + 1, (1,)).item())
-        left = int(torch.randint(0, w - crop_size + 1, (1,)).item())
-
-        # 동일한 crop parameter를 x, y에 적용
-        x = TF.resized_crop(
-            x,
-            top=top,
-            left=left,
-            height=crop_size,
-            width=crop_size,
-            size=[h, w],
-            interpolation=InterpolationMode.BILINEAR,
-            antialias=True,
-        )
-
-        y = TF.resized_crop(
-            y,
-            top=top,
-            left=left,
-            height=crop_size,
-            width=crop_size,
-            size=[h, w],
-            interpolation=InterpolationMode.BILINEAR,
-            antialias=True,
-        )'''
-
-        if torch.rand(1).item() < self.hflip_prob:
-            x = TF.hflip(x)
-            y = TF.hflip(y)
-
-        if torch.rand(1).item() < self.vflip_prob:
-            x = TF.vflip(x)
-            y = TF.vflip(y)
-
-        return x, y
-
     def __getitem__(self, idx):
         map_idx_in_split = idx // self.num_tx
         tx_idx_in_map = idx % self.num_tx
@@ -207,7 +144,7 @@ class RadioMapSeerDataset(Dataset):
         if self.use_tx_gaussian_map:
             tx = self._tx_to_gaussian(tx, sigma=self.tx_gaussian_sigma)
 
-        if self.cars_input:
+        if self.target_type == "carsDPM":
             second_channel = self._read_gray(os.path.join(self.dir_cars, building_name))
         else:
             second_channel = building
@@ -224,9 +161,6 @@ class RadioMapSeerDataset(Dataset):
         x = torch.from_numpy(x_np).float()
         y = torch.from_numpy(y_np).float()
 
-        if self.augment:
-            x, y = self._augment_xy(x, y)
-
         if self.return_name:
             return x, y, sample_name
         return x, y
@@ -235,8 +169,7 @@ class RadioMapSeerDataset(Dataset):
 def build_dataloaders(cfg, return_datasets: bool = False):
     data_cfg = cfg["data"]
 
-    cars_input = data_cfg.get("cars_input", False)
-    target_type = data_cfg.get("target_type", "carsDPM" if cars_input else "DPM")
+    target_type = data_cfg.get("target_type", "carsDPM")
     num_tx = data_cfg.get("num_tx", 80)
     thresh = data_cfg.get("thresh", 0.0)
     return_name = data_cfg.get("return_name", False)
@@ -246,10 +179,6 @@ def build_dataloaders(cfg, return_datasets: bool = False):
     pin_memory = data_cfg.get("pin_memory", True)
     persistent_workers = data_cfg.get("persistent_workers", False) and num_workers > 0
 
-    augment = data_cfg.get("augment", False)
-    crop_scale = crop_scale = tuple(data_cfg.get("crop_scale", (0.8, 1.0)))
-    hflip_prob = data_cfg.get("hflip_prob", 0.5)
-    vflip_prob = data_cfg.get("vflip_prob", 0.5)
     use_tx_gaussian_map = data_cfg.get("use_tx_gaussian_map", True)
     tx_gaussian_sigma = data_cfg.get("tx_gaussian_sigma", 6.0)
 
@@ -258,13 +187,8 @@ def build_dataloaders(cfg, return_datasets: bool = False):
         split="train",
         num_tx=num_tx,
         target_type=target_type,
-        cars_input=cars_input,
         thresh=thresh,
         return_name=return_name,
-        augment=augment,
-        crop_scale=crop_scale,
-        hflip_prob=hflip_prob,
-        vflip_prob=vflip_prob,
         use_tx_gaussian_map=use_tx_gaussian_map,
         tx_gaussian_sigma=tx_gaussian_sigma,
     )
@@ -274,10 +198,8 @@ def build_dataloaders(cfg, return_datasets: bool = False):
         split="val",
         num_tx=num_tx,
         target_type=target_type,
-        cars_input=cars_input,
         thresh=thresh,
         return_name=return_name,
-        augment=False,
         use_tx_gaussian_map=use_tx_gaussian_map,
         tx_gaussian_sigma=tx_gaussian_sigma,
     )
@@ -287,10 +209,8 @@ def build_dataloaders(cfg, return_datasets: bool = False):
         split="test",
         num_tx=num_tx,
         target_type=target_type,
-        cars_input=cars_input,
         thresh=thresh,
         return_name=return_name,
-        augment=False,
         use_tx_gaussian_map=use_tx_gaussian_map,
         tx_gaussian_sigma=tx_gaussian_sigma,
     )
