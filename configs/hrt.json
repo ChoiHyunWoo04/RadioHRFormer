@@ -1,6 +1,6 @@
 {
   "seed": 42,
-  "runtime": {"gpus": [2], "amp": true},
+  "runtime": {"gpus": [0], "amp": true},
   "precompute_obstacle": {
     "splits": ["train", "val"],
     "batch_size": 1,
@@ -12,7 +12,7 @@
     "root_dir": "/home/ailab/Desktop/data/radiomapseer/",
     "image_size": 256,
     "num_tx": 80,
-    "target_type": "carsDPM",
+    "target_type": "DPM",
     "thresh": 0.0,
     "batch_size": 32,
     "num_workers": 4,

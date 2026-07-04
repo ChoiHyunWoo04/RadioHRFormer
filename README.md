@@ -4,15 +4,7 @@ python tools/visualize_physics_targets.py --config-path ./configs/hrt.json
 
 # precompute
 python tools/precompute_obstacle_targets.py \
-  --config-path ./configs/hrt.json \
-  --data-root /home/ailab/Desktop/data/radiomapseer \
-  --save-root ./data/precomputed_obstacle \
-  --input-mode cars \
-  --target-type carsDPM \
-  --splits train,val,test \
-  --tx-channel 2 \
-  --obstacle-channels 0,1 \
-  --dtype float16
+  --config-path ./configs/hrt.json
 
 
 # pretrain
