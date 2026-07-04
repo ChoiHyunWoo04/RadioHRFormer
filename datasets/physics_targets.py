@@ -503,12 +503,6 @@ class PhysicsTargetBuilder(nn.Module):
 
             for name in requested_geo:
                 target = geo_targets[name]
-
-                # Stored obstacle maps are all bounded in [0, 1].
-                # In inversion mode, convert obstruction intensity into a
-                # transmission-like propagation prior:
-                #   1.0 -> unobstructed / LoS-like ray
-                #   0.0 -> most strongly obstructed ray in the stored scale
                 if self.invert_obstacle_targets:
                     target = 1.0 - target.clamp(0.0, 1.0)
 

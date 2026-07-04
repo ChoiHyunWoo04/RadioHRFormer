@@ -1,6 +1,13 @@
 {
   "seed": 42,
   "runtime": {"gpus": [2], "amp": true},
+  "precompute_obstacle": {
+    "splits": ["train", "val"],
+    "batch_size": 1,
+    "num_workers": 0,
+    "dtype": "float16",
+    "overwrite": false
+  },
   "data": {
     "root_dir": "/home/ailab/Desktop/data/radiomapseer/",
     "image_size": 256,
@@ -105,7 +112,7 @@
     "obstacle_channels": [0,1],
     "ray_stride": 1,
     "invert_obstacle_targets": true,
-    "geo_precompute_root": null,
+    "geo_precompute_root": "/home/ailab/Desktop/hwchoi/radiohrformer/data/precomputed_obstacle/",
     "geo_mode_name": null,
     "radiodiff_pathloss_trunc": -147.0,
     "radiodiff_pathloss_max": -47.0,
@@ -122,5 +129,20 @@
     "warmup_epochs": 5,
     "min_lr": 1e-06,
     "loss": "joint"
+  },
+  "visualize": {
+    "save_dir": "./save/visual_pretrain_targets",
+    "split": "train",
+    "num_samples": 4,
+    "batch_size": 1,
+    "num_workers": 0,
+    "save_grid": true,
+    "save_individual": true,
+    "save_inverted_obstacle_targets": true,
+    "targets": [
+      "radial_gain",
+      "obstacle_saturating_a005"
+    ],
+    "dpi": 180
   }
 }

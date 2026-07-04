@@ -7,7 +7,7 @@ from collections import defaultdict
 
 
 # Seed-fixing utility
-def set_seed(seed=2026):
+def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)

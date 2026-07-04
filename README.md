@@ -1,5 +1,5 @@
 # visualization
-python visualize_physics_targets.py --config-path ./configs/hrt.json
+python tools/visualize_physics_targets.py --config-path ./configs/hrt.json
 
 
 # precompute

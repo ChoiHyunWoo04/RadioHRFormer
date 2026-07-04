@@ -171,6 +171,9 @@ def resolve_visualizer_options(cfg):
         "dpi": int(visualize_cfg["dpi"]),
         "save_grid": bool(visualize_cfg["save_grid"]),
         "save_individual": bool(visualize_cfg["save_individual"]),
+        "save_inverted_obstacle_targets": bool(
+            visualize_cfg.get("save_inverted_obstacle_targets", False)
+        ),
         "batch_size": int(data_cfg["batch_size"]),
         "num_workers": int(data_cfg["num_workers"]),
         "cars_input": bool(data_cfg.get("cars_input", False)),
@@ -535,10 +538,41 @@ def pretty_target_name(name):
         "obstacle_sum": "obstacle: sum",
         "obstacle_saturating_a003": "obstacle: saturating (α=0.03)",
         "obstacle_saturating_a005": "obstacle: saturating (α=0.05)",
+        "obstacle_sum_inverted": "obstacle: inverse sum / transmission",
+        "obstacle_saturating_a003_inverted": (
+            "obstacle: inverse saturating (α=0.03) / transmission"
+        ),
+        "obstacle_saturating_a005_inverted": (
+            "obstacle: inverse saturating (α=0.05) / transmission"
+        ),
         "radial_gain": "radial gain",
         "corner_diffraction": "corner diffraction",
     }
     return aliases.get(name, name)
+
+
+def add_inverted_obstacle_targets(targets: Dict[str, torch.Tensor]):
+    """Add visualization-only transmission-style maps: 1 - obstacle target.
+
+    Original obstacle maps are preserved. Added keys are used only for PNG
+    export, never for model heads or pretraining losses.
+    """
+    invertible_targets = (
+        "obstacle_sum",
+        "obstacle_saturating_a003",
+        "obstacle_saturating_a005",
+    )
+
+    added_names = []
+    for target_name in invertible_targets:
+        if target_name not in targets:
+            continue
+
+        inverted_name = f"{target_name}_inverted"
+        targets[inverted_name] = 1.0 - targets[target_name].clamp(0.0, 1.0)
+        added_names.append(inverted_name)
+
+    return added_names
 
 
 def save_single_map(path, img, title, cmap="viridis", dpi=180):
@@ -704,6 +738,10 @@ def main():
     print(f"[INFO] Target type: {opts['target_type']}")
     print(f"[INFO] Requested targets: {target_names}")
     print(
+        "[INFO] Save inverted obstacle PNGs: "
+        f"{opts['save_inverted_obstacle_targets']}"
+    )
+    print(
         f"[INFO] Split: {opts['split']} | samples: {opts['num_samples']} "
         f"| loader batch size: {opts['batch_size']}"
     )
@@ -750,8 +788,20 @@ def main():
                         dim=0,
                     ).to(device=device)
 
-        # Preserve the cfg target ordering in both grid and standalone filenames.
-        all_targets = {name: all_targets[name] for name in target_names}
+        # Preserve cfg target ordering. Optionally append visualization-only
+        # inverse obstacle maps after their corresponding original maps.
+        display_target_names = list(target_names)
+        if opts["save_inverted_obstacle_targets"]:
+            added_inverted_names = add_inverted_obstacle_targets(all_targets)
+            display_target_names.extend(
+                name for name in added_inverted_names
+                if name not in display_target_names
+            )
+
+        all_targets = {
+            name: all_targets[name]
+            for name in display_target_names
+        }
 
         for i in range(x.size(0)):
             if saved >= opts["num_samples"]:
