@@ -274,35 +274,61 @@ def evaluate_one_epoch(model, loader, loss_fn, device, use_amp=False, epoch=None
     model.eval()
     total_loss = 0.0
     total_seen = 0
+
+    # JointLoss 항목별 누적용
+    component_sums = {}
+
     pred_all = []
     gt_all = []
 
     desc = split_name if epoch is None else f"{split_name} Epoch {epoch}"
     pbar = tqdm(loader, desc=desc, leave=False)
     amp_device_type = get_amp_device_type(device)
-    
+
     for batch in pbar:
         x, y, _ = unpack_batch(batch, device)
 
         with autocast(device_type=amp_device_type, enabled=use_amp):
             pred = model(x)
-            loss = loss_fn(pred, y)
+
+            # JointLoss처럼 return_dict를 지원하는 loss만 항목별 반환
+            try:
+                loss, loss_dict = loss_fn(pred, y, return_dict=True)
+            except TypeError:
+                loss = loss_fn(pred, y)
+                loss_dict = None
 
         bs = x.size(0)
         total_loss += loss.item() * bs
         total_seen += bs
 
+        if loss_dict is not None:
+            for key, value in loss_dict.items():
+                if key not in component_sums:
+                    component_sums[key] = 0.0
+                component_sums[key] += float(value.item()) * bs
+
         pred_all.append(pred.detach().cpu())
         gt_all.append(y.detach().cpu())
 
-        pbar.set_postfix({
+        postfix = {
             "loss": f"{total_loss / total_seen:.5f}",
-        })
+        }
+
+        if component_sums:
+            postfix.update({
+                "mae_l": f"{component_sums['loss_mae'] / total_seen:.5f}",
+                "rmse_l": f"{component_sums['loss_rmse'] / total_seen:.6f}",
+                "grad_l": f"{component_sums['loss_grad'] / total_seen:.5f}",
+                "ssim_l": f"{component_sums['loss_ssim'] / total_seen:.5f}",
+            })
+
+        pbar.set_postfix(postfix)
 
     pred_all = torch.cat(pred_all, dim=0).float()
     gt_all = torch.cat(gt_all, dim=0).float()
 
-    return {
+    metrics = {
         "loss": total_loss / total_seen,
         "MAE": float(MAE(gt_all, pred_all)),
         "RMSE": float(compute_rmse(pred_all, gt_all)),
@@ -310,6 +336,12 @@ def evaluate_one_epoch(model, loader, loss_fn, device, use_amp=False, epoch=None
         "PSNR": float(compute_psnr(pred_all, gt_all)),
         "SSIM": float(compute_ssim(pred_all, gt_all)),
     }
+
+    # 항목별 validation loss 평균 추가
+    for key, value in component_sums.items():
+        metrics[key] = value / total_seen
+
+    return metrics
 
 
 def save_loss_curve(train_losses, val_losses, save_path):
@@ -466,6 +498,24 @@ def main():
             f"val_RMSE={val_metrics['RMSE']:.5f} val_NMSE={val_metrics['NMSE']:.5f} "
             f"val_PSNR={val_metrics['PSNR']:.2f} val_SSIM={val_metrics['SSIM']:.5f}"
         )
+
+        if "loss_mae" in val_metrics:
+            msg += (
+                f" | raw: "
+                f"mae={val_metrics['loss_mae']:.5f} "
+                f"rmse={val_metrics['loss_rmse']:.7f} "
+                f"grad={val_metrics['loss_grad']:.5f} "
+                f"ssim={val_metrics['loss_ssim']:.5f}"
+            )
+
+        if "w_loss_mae" in val_metrics:
+            msg += (
+                f" | weighted: "
+                f"mae={val_metrics['w_loss_mae']:.5f} "
+                f"rmse={val_metrics['w_loss_rmse']:.7f} "
+                f"grad={val_metrics['w_loss_grad']:.5f} "
+                f"ssim={val_metrics['w_loss_ssim']:.5f}"
+            )
         print(msg)
         with open(log_path, "a") as f:
             f.write(msg + "\n")

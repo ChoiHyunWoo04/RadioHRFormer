@@ -96,11 +96,8 @@ def prepare_eval_config(cfg, return_name=True):
 
 
 def resolve_options(args, cfg):
-    cars_input = bool(cfg_get(cfg, ["data", "cars_input"], False))
     return {
         "data_root": cfg_get(cfg, ["data", "root_dir"], None),
-        "input_mode": "cars" if cars_input else "building",
-        "cars_input": cars_input,
         "target_type": cfg_get(cfg, ["data", "target_type"], "DPM"),
         "split": "val" if args.split == "valid" else args.split,
         "num_tx": cfg_get(cfg, ["data", "num_tx"], 80),
@@ -411,7 +408,6 @@ def main():
 
     print(f"EVAL_SIZE : {len(dataset)}")
     print(f"Split     : {opts['split']}")
-    print(f"Input mode: {opts['input_mode']}")
     print(f"Target    : {opts['target_type']}")
 
     base_model = HRFormerRadioMapRegressor(cfg).to(device)
@@ -443,8 +439,6 @@ def main():
         f.write(f"amp: {use_amp}\n")
         f.write(f"data_root: {opts['data_root']}\n")
         f.write(f"split: {opts['split']}\n")
-        f.write(f"input_mode: {opts['input_mode']}\n")
-        f.write(f"cars_input: {opts['cars_input']}\n")
         f.write(f"target_type: {opts['target_type']}\n")
         f.write(f"num_tx: {opts['num_tx']}\n")
         f.write("\nModel Profile\n")
