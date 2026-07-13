@@ -414,7 +414,7 @@ def main():
 
     train_losses = []
     val_losses = []
-    best_mae = float("inf")
+    best_rmse = float("inf")
     last_metrics = None
 
     with open(log_path, "a") as f:
@@ -470,8 +470,8 @@ def main():
         with open(log_path, "a") as f:
             f.write(msg + "\n")
 
-        if val_metrics["MAE"] < best_mae:
-            best_mae = val_metrics["MAE"]
+        if val_metrics["RMSE"] < best_rmse:
+            best_rmse = val_metrics["RMSE"]
             save_checkpoint(
                 model,
                 optimizer,
