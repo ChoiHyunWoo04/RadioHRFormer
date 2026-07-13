@@ -1,5 +1,5 @@
 # visualization
-python tools/visualize_physics_targets.py --config-path ./configs/hrt.json
+python tools/visualize_physics_targets.py --config-path ./configs/carsdpm_pretrain.json
 
 
 # precompute
@@ -9,7 +9,7 @@ python tools/precompute_obstacle_targets.py \
 
 # pretrain
 python pretrain_hrformer.py \
-  --config-path ./configs/hrt.json \
+  --config-path ./configs/carsdpm_pretrain.json \
   --save-root ./save_pretrain
 
 # train with pretrained weights

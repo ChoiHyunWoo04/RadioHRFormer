@@ -1,0 +1,148 @@
+{
+  "seed": 42,
+  "runtime": {"gpus": [2], "amp": true},
+  "precompute_obstacle": {
+    "splits": ["train", "val"],
+    "batch_size": 1,
+    "num_workers": 0,
+    "dtype": "float16",
+    "overwrite": false
+  },
+  "data": {
+    "root_dir": "/home/ailab/Desktop/data/radiomapseer/",
+    "image_size": 256,
+    "num_tx": 80,
+    "target_type": "carsDPM",
+    "thresh": 0.0,
+    "batch_size": 32,
+    "num_workers": 4,
+    "pin_memory": true,
+    "persistent_workers": true,
+    "return_name": false,
+    "use_tx_gaussian_map": false,
+    "tx_gaussian_sigma": 6.0
+  },
+  "model": {
+    "name": "HRFormerRadioMapRegressor",
+    "in_channels": 3,
+    "out_channels": 1,
+    "branch_index": 0,
+    "use_stem_skip": true,
+    "norm_cfg": {
+      "type": "BN",
+      "requires_grad": true
+    },
+    "backbone": {
+      "type": "HRT",
+      "variant": "hrt_small",
+      "pretrained": null,
+      "extra": {
+        "drop_path_rate": 0.3,
+
+        "stage1": {
+          "num_modules": 1,
+          "num_branches": 1,
+          "block": "BOTTLENECK",
+          "num_blocks": [2],
+          "num_channels": [64],
+          "num_heads": [2],
+          "num_mlp_ratios": [4]
+        },
+
+        "stage2": {
+          "num_modules": 1,
+          "num_branches": 2,
+          "block": "TRANSFORMER_BLOCK",
+          "num_blocks": [2, 2],
+          "num_channels": [32, 64],
+          "num_heads": [1, 2],
+          "num_mlp_ratios": [4, 4],
+          "num_window_sizes": [8, 8]
+        },
+
+        "stage3": {
+          "num_modules": 4,
+          "num_branches": 3,
+          "block": "TRANSFORMER_BLOCK",
+          "num_blocks": [2, 2, 2],
+          "num_channels": [32, 64, 128],
+          "num_heads": [1, 2, 4],
+          "num_mlp_ratios": [4, 4, 4],
+          "num_window_sizes": [8, 8, 8]
+        },
+
+        "stage4": {
+          "num_modules": 4,
+          "num_branches": 4,
+          "block": "TRANSFORMER_BLOCK",
+          "num_blocks": [2, 2, 2, 2],
+          "num_channels": [32, 64, 128, 256],
+          "num_heads": [1, 2, 4, 8],
+          "num_mlp_ratios": [4, 4, 4, 4],
+          "num_window_sizes": [8, 8, 8, 8],
+          "multiscale_output": false
+        }
+      }
+    },
+
+    "decoder": {
+      "type": "HRFormerSkipDecoder",
+      "in_channels": 32,
+      "stem2_channels": 64,
+      "stem1_channels": 64,
+      "hidden_channels": 64,
+      "out_channels": 1
+    }
+  },
+
+  "pretrain": {
+    "epochs": 100,
+    "lr": 0.0001,
+    "weight_decay": 0.0005,
+    "warmup_epochs": 5,
+    "min_lr": 1e-06
+  },
+
+  "physics": {
+    "targets": ["radial_gain","obstacle_saturating_a005"],
+    "field_mode": "normalized_power",
+    "gaussian_sigma": 2.0,
+    "tx_channel": -1,
+    "building_threshold": 0.5,
+    "obstacle_channels": [0,1],
+    "ray_stride": 1,
+    "invert_obstacle_targets": true,
+    "geo_precompute_root": "/home/ailab/Desktop/hwchoi/radiohrformer/data/precomputed_obstacle/",
+    "geo_mode_name": null,
+    "radiodiff_pathloss_trunc": -147.0,
+    "radiodiff_pathloss_max": -47.0,
+    "radiodiff_source_power_dbm": 23.0,
+    "radiodiff_h": 1.0,
+    "radiodiff_border_value": 1.0,
+    "radiodiff_eps": 1e-30,
+    "radiodiff_smooth_sigma": 0.9
+  },
+  "train": {
+    "epochs": 100,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "warmup_epochs": 5,
+    "min_lr": 1e-06,
+    "loss": "joint"
+  },
+  "visualize": {
+    "save_dir": "./save/visual_pretrain_targets",
+    "split": "train",
+    "num_samples": 4,
+    "batch_size": 1,
+    "num_workers": 0,
+    "save_grid": true,
+    "save_individual": true,
+    "save_inverted_obstacle_targets": true,
+    "targets": [
+      "radial_gain",
+      "obstacle_saturating_a005"
+    ],
+    "dpi": 180
+  }
+}

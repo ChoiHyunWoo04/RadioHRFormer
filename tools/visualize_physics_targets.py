@@ -37,6 +37,8 @@ ONLINE_INPUT_TARGETS = {
     "obstacle_sum",
     "obstacle_saturating_a003",
     "obstacle_saturating_a005",
+    "obstacle_saturating_a007",
+    "obstacle_saturating_a009",
     "radial_gain",
     "corner_diffraction",
 }
@@ -45,8 +47,7 @@ SUPPORTED_TARGETS = ONLINE_LABEL_TARGETS | ONLINE_INPUT_TARGETS
 TARGET_ALIASES = {
     "radial-gain": "radial_gain",
     "corner-diffraction": "corner_diffraction",
-    "obstacle-saturating": "obstacle_saturating_a003",
-    "obstacle_saturating": "obstacle_saturating_a003",
+    "obstacle-saturating": "obstacle_saturating_a005",
 }
 
 
@@ -186,7 +187,7 @@ def resolve_visualizer_options(cfg):
         "normalize_each_sample": bool(physics_cfg.get("normalize_each_sample", True)),
         "building_threshold": float(physics_cfg.get("building_threshold", 0.5)),
         "obstacle_channels": parse_int_list(physics_cfg.get("obstacle_channels", [0, 1])),
-        "obstacle_alphas": parse_float_list(physics_cfg.get("obstacle_alphas", [0.03, 0.05])),
+        "obstacle_alphas": parse_float_list(physics_cfg.get("obstacle_alphas", [0.03, 0.05, 0.07, 0.09])),
         "corner_sigma": float(physics_cfg.get("corner_sigma", 3.0)),
         "corner_posthit_decay": float(physics_cfg.get("corner_posthit_decay", 0.03)),
         "corner_max_corners": int(physics_cfg.get("corner_max_corners", 128)),
@@ -306,6 +307,34 @@ def minmax(z, eps=1e-8):
     zmax = z.amax()
     return (z - zmin) / (zmax - zmin + eps)
 
+'''
+def make_radial_gain(h, w, tx_y, tx_x, device, dtype=torch.float32):
+
+    yy = torch.arange(h, device=device, dtype=dtype).view(h, 1)
+    xx = torch.arange(w, device=device, dtype=dtype).view(1, w)
+
+    # RadioMapSeer pixel resolution is 1 meter.
+    distance_m = torch.sqrt(
+        (yy - tx_y) ** 2
+        + (xx - tx_x) ** 2
+    )
+
+    # Reference distance = 1 m.
+    # This also makes the Tx pixel value exactly the maximum.
+    distance_m = distance_m.clamp_min(1.0)
+
+    # RadioUNet / RadioMapSeer gray-level scaling constants.
+    pl_trnc_db = -147.0
+    max_gain_db = -47.84
+
+    # Free-space pathloss exponent n=2.
+    pathloss_exp = 2.0
+
+    # Path gain in dB. Larger distance -> smaller, more negative value.
+    pl_radial_db = max_gain_db - 10.0 * pathloss_exp * torch.log10(distance_m)
+
+    radial_gain = (pl_radial_db - pl_trnc_db) / (max_gain_db - pl_trnc_db)
+    return radial_gain.clamp(0.0, 1.0).unsqueeze(0)'''
 
 def make_radial_gain(h, w, tx_y, tx_x, device, dtype=torch.float32):
     """Log-distance free-space-like gain prior in [0,1]."""
@@ -502,6 +531,10 @@ def compute_input_driven_targets(
             targets["obstacle_saturating_a003"] = target_map.clamp(0.0, 1.0)
         elif abs(alpha - 0.05) < 1e-8:
             targets["obstacle_saturating_a005"] = target_map.clamp(0.0, 1.0)
+        elif abs(alpha - 0.07) < 1e-8:
+            targets["obstacle_saturating_a007"] = target_map.clamp(0.0, 1.0)
+        elif abs(alpha - 0.09) < 1e-8:
+            targets["obstacle_saturating_a009"] = target_map.clamp(0.0, 1.0)
 
     return targets
 
@@ -561,6 +594,8 @@ def add_inverted_obstacle_targets(targets: Dict[str, torch.Tensor]):
         "obstacle_sum",
         "obstacle_saturating_a003",
         "obstacle_saturating_a005",
+        "obstacle_saturating_a007",
+        "obstacle_saturating_a009",
     )
 
     added_names = []
@@ -707,6 +742,20 @@ def main():
     ):
         missing_alpha_targets.append(
             "obstacle_saturating_a005 requires physics.obstacle_alphas to include 0.05"
+        )
+    if (
+        "obstacle_saturating_a007" in requested_input_targets
+        and 0.07 not in opts["obstacle_alphas"]
+    ):
+        missing_alpha_targets.append(
+            "obstacle_saturating_a007 requires physics.obstacle_alphas to include 0.07"
+        )
+    if (
+        "obstacle_saturating_a009" in requested_input_targets
+        and 0.09 not in opts["obstacle_alphas"]
+    ):
+        missing_alpha_targets.append(
+            "obstacle_saturating_a009 requires physics.obstacle_alphas to include 0.09"
         )
     if missing_alpha_targets:
         raise ValueError("; ".join(missing_alpha_targets))

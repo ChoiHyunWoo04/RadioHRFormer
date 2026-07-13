@@ -48,8 +48,9 @@ class PhysicsTargetBuilder(nn.Module):
 
     PRECOMPUTED_GEO_TARGETS = {
         "obstacle_sum",
-        "obstacle_saturating_a003",
         "obstacle_saturating_a005",
+        "obstacle_saturating_a007",
+        "obstacle_saturating_a009",
     }
 
     VALID_TARGETS = {
@@ -58,8 +59,9 @@ class PhysicsTargetBuilder(nn.Module):
         "singularity",
         "radial_gain",
         "obstacle_sum",
-        "obstacle_saturating_a003",
         "obstacle_saturating_a005",
+        "obstacle_saturating_a007",
+        "obstacle_saturating_a009",
     }
 
     def __init__(
@@ -321,11 +323,6 @@ class PhysicsTargetBuilder(nn.Module):
         std = z.std(dim=(2, 3), keepdim=True).clamp_min(self.eps)
         return (z - mean) / std
 
-    def _minmax(self, z):
-        zmin = z.amin(dim=(2, 3), keepdim=True)
-        zmax = z.amax(dim=(2, 3), keepdim=True)
-        return (z - zmin) / (zmax - zmin + self.eps)
-
     @torch.no_grad()
     def _radial_gain(self, x):
         """Build a label-free log-distance gain prior from Tx locations.
@@ -359,6 +356,76 @@ class PhysicsTargetBuilder(nn.Module):
         max_distance = math.sqrt((height - 1) ** 2 + (width - 1) ** 2)
         radial_gain = 1.0 - torch.log1p(distance) / math.log1p(max_distance)
         return radial_gain.clamp(0.0, 1.0).to(dtype=dtype)
+    '''
+    @torch.no_grad()
+    def _radial_gain(self, x):
+        """Build a RadioMapSeer-scale radial gain prior from Tx locations.
+
+        This target follows the RadioUNet / RadioMapSeer gray-level convention.
+
+        RadioMapSeer path gain scale:
+            PL_trnc = -147 dB
+            M1      = -47.84 dB
+
+        Free-space/log-distance radial model:
+            PL_radial(d) = M1 - 10 * n * log10(max(d, 1))
+
+        With n=2:
+            PL_radial(d) = M1 - 20 * log10(max(d, 1))
+
+        Gray-level conversion:
+            radial_gain = (PL_radial - PL_trnc) / (M1 - PL_trnc)
+
+        Output semantics:
+            - 1.0 at Tx / 1 m reference distance.
+            - Monotonic decay with Tx-pixel distance.
+            - Same [0,1] scale convention as RadioMapSeer labels.
+        """
+        tx = self._select_channel(x, self.tx_channel).float()
+        batch_size, _, height, width = tx.shape
+        device = x.device
+        dtype = x.dtype
+
+        flat = tx.flatten(2).argmax(dim=-1).squeeze(1)
+        tx_y = (flat // width).to(dtype=torch.float32)
+        tx_x = (flat % width).to(dtype=torch.float32)
+
+        yy = torch.arange(
+            height,
+            device=device,
+            dtype=torch.float32,
+        ).view(1, 1, height, 1)
+
+        xx = torch.arange(
+            width,
+            device=device,
+            dtype=torch.float32,
+        ).view(1, 1, 1, width)
+
+        # RadioMapSeer pixel resolution is 1 meter.
+        distance_m = torch.sqrt(
+            (yy - tx_y.view(batch_size, 1, 1, 1)) ** 2
+            + (xx - tx_x.view(batch_size, 1, 1, 1)) ** 2
+        )
+
+        # Reference distance = 1 m.
+        # This also makes the Tx pixel value exactly the maximum.
+        distance_m = distance_m.clamp_min(1.0)
+
+        # RadioUNet / RadioMapSeer gray-level scaling constants.
+        pl_trnc_db = -147.0
+        max_gain_db = -47.84
+
+        # Free-space pathloss exponent n=2.
+        pathloss_exp = 2.0
+
+        # Path gain in dB. Larger distance -> smaller, more negative value.
+        pl_radial_db = max_gain_db - 10.0 * pathloss_exp * torch.log10(distance_m)
+
+        radial_gain = (pl_radial_db - pl_trnc_db) / (max_gain_db - pl_trnc_db)
+        radial_gain = radial_gain.clamp(0.0, 1.0)
+
+        return radial_gain.to(dtype=dtype)'''
 
     def _singularity_target(self, y, x):
         y = y.float().clamp(0.0, 1.0)
@@ -413,35 +480,6 @@ class PhysicsTargetBuilder(nn.Module):
         xx = (flat % w).long()
         return yy, xx
 
-    @torch.no_grad()
-    def _visibility_and_obstacle(self, x):
-        obstacle_mask = self._build_obstacle_map(x)
-        tx = self._select_channel(x, self.tx_channel)
-        b, _, h, w = obstacle_mask.shape
-        device = x.device
-        yy_tx, xx_tx = self._tx_centers(tx)
-
-        obs = torch.zeros((b, 1, h, w), device=device, dtype=x.dtype)
-        ys = torch.arange(0, h, self.ray_stride, device=device)
-        xs = torch.arange(0, w, self.ray_stride, device=device)
-
-        for bi in range(b):
-            y0 = int(yy_tx[bi].item())
-            x0 = int(xx_tx[bi].item())
-            for y1 in ys.tolist():
-                for x1 in xs.tolist():
-                    dx = x1 - x0
-                    dy = y1 - y0
-                    n = max(abs(dx), abs(dy), 1) + 1
-                    rr = torch.linspace(y0, y1, n, device=device).round().long().clamp(0, h - 1)
-                    cc = torch.linspace(x0, x1, n, device=device).round().long().clamp(0, w - 1)
-                    hit = obstacle_mask[bi, 0, rr, cc].sum()
-                    obs[bi, 0, y1, x1] = hit
-
-        if self.ray_stride > 1:
-            obs = F.interpolate(obs, size=(h, w), mode="bilinear", align_corners=False)
-        return obs
-
     def forward(self, x, y, names=None) -> Dict[str, torch.Tensor]:
         target_names = self.normalize_target_names(self.target_names)
         self._validate_target_names(target_names)
@@ -485,26 +523,18 @@ class PhysicsTargetBuilder(nn.Module):
                     device=x.device,
                     dtype=x.dtype,
                 )
-            else:
-                # Online fallback for debugging only. Full training should use
-                # precomputed targets because ray traversal is expensive.
-                obstacle_raw = self._visibility_and_obstacle(x.float())
-                obstacle_sum = self._minmax(obstacle_raw)
-
-                geo_targets = {
-                    "obstacle_sum": obstacle_sum.to(dtype=x.dtype),
-                    "obstacle_saturating_a003": (
-                        1.0 - torch.exp(-0.03 * obstacle_raw)
-                    ).clamp(0.0, 1.0).to(dtype=x.dtype),
-                    "obstacle_saturating_a005": (
-                        1.0 - torch.exp(-0.05 * obstacle_raw)
-                    ).clamp(0.0, 1.0).to(dtype=x.dtype),
-                }
 
             for name in requested_geo:
-                target = geo_targets[name]
-                if self.invert_obstacle_targets:
-                    target = 1.0 - target.clamp(0.0, 1.0)
+                target = geo_targets[name].clamp(0.0, 1.0)
+
+                # obstacle_saturating_a* are already precomputed as transmission maps:
+                #   exp(-alpha * obstruction_length)
+                # Therefore, do NOT invert them again.
+                #
+                # Only obstacle_sum is still an obstruction map. If you explicitly request
+                # inverted obstacle_sum, invert only this target.
+                if self.invert_obstacle_targets or name == "obstacle_sum":
+                    target = 1.0 - target
 
                 targets[name] = target
 
@@ -526,7 +556,7 @@ class PhysicsPretrainLoss(nn.Module):
     def __init__(
         self,
         loss_weights: Optional[Dict[str, float]] = None,
-        bce_names=("los", "singularity"),
+        bce_names=("singularity",),
     ):
         super().__init__()
 

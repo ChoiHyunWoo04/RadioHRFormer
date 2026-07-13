@@ -209,6 +209,13 @@ def minmax(z, eps=1e-8):
     return (z - z_min) / (z_max - z_min + eps)
 
 
+def alpha_to_key(alpha: float) -> str:
+    return f"obstacle_saturating_a{int(round(alpha * 100)):03d}"
+
+
+OBSTACLE_ALPHAS = (0.05, 0.07, 0.09)
+
+
 @torch.no_grad()
 def compute_obstacle_targets(
     x_i,
@@ -239,9 +246,12 @@ def compute_obstacle_targets(
     obstacle_sum_raw = torch.zeros(
         (1, height, width), device=device, dtype=torch.float32
     )
-    obstacle_saturating_a005 = torch.zeros_like(obstacle_sum_raw)
 
-    # One Tx-to-pixel ray traversal generates both output maps.
+    obstacle_transmission_maps = {
+        alpha: torch.zeros_like(obstacle_sum_raw)
+        for alpha in OBSTACLE_ALPHAS
+    }
+
     for y1 in range(height):
         dy = y1 - tx_y
         for x1 in range(width):
@@ -263,16 +273,19 @@ def compute_obstacle_targets(
 
             hit_length = obstacle_mask[0, rows, cols].sum()
             obstacle_sum_raw[0, y1, x1] = hit_length
-            obstacle_saturating_a005[0, y1, x1] = (
-                1.0 - torch.exp(-0.05 * hit_length)
-            )
 
-    return {
+            for alpha, target_map in obstacle_transmission_maps.items():
+                # precomputed inverted saturating / transmission prior
+                target_map[0, y1, x1] = torch.exp(-float(alpha) * hit_length)
+
+    targets = {
         "obstacle_sum": minmax(obstacle_sum_raw).cpu(),
-        "obstacle_saturating_a005": (
-            obstacle_saturating_a005.clamp(0.0, 1.0).cpu()
-        ),
     }
+
+    for alpha, target_map in obstacle_transmission_maps.items():
+        targets[alpha_to_key(alpha)] = target_map.clamp(0.0, 1.0).cpu()
+
+    return targets
 
 
 def get_split_loader(split_dict, split):
@@ -300,14 +313,18 @@ def unpack_batch(batch):
 
 
 def save_manifest(save_base, cfg, options):
+    target_keys = ["obstacle_sum"] + [
+        alpha_to_key(alpha) for alpha in OBSTACLE_ALPHAS
+    ]
+    print(f"[INFO] target keys       : {target_keys}")
+
     manifest = {
-        "target_keys": [
-            "obstacle_sum",
-            "obstacle_saturating_a005",
-        ],
+        "target_keys": target_keys,
         "saturation_alpha_by_key": {
-            "obstacle_saturating_a005": 0.05,
+            alpha_to_key(alpha): alpha
+            for alpha in OBSTACLE_ALPHAS
         },
+        "stored_obstacle_saturating_semantics": "exp(-alpha * obstruction_length), i.e., inverted/transmission prior",
         "dtype": options["dtype_name"],
         "input_mode_inferred_from_target_type": (
             "cars" if cfg["data"]["cars_input"] else "building"
@@ -339,7 +356,6 @@ def main():
     print(f"[INFO] device            : {device}")
     print(f"[INFO] save_base         : {save_base}")
     print(f"[INFO] splits            : {options['splits']}")
-    print("[INFO] target keys       : obstacle_sum, obstacle_saturating_a005")
     print(f"[INFO] target_type       : {cfg['data']['target_type']}")
     print(f"[INFO] cars_input        : {cfg['data']['cars_input']} (inferred)")
     print(f"[INFO] obstacle_channels : {options['obstacle_channels']}")
