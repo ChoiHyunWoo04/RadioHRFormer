@@ -11,9 +11,7 @@
     "num_workers": 4,
     "pin_memory": true,
     "persistent_workers": true,
-    "return_name": false,
-    "use_tx_gaussian_map": false,
-    "tx_gaussian_sigma": 6.0
+    "return_name": false
   },
   "model": {
     "name": "HRFormerRadioMapRegressor",

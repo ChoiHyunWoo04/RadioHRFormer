@@ -318,7 +318,7 @@ def evaluate_one_epoch(model, loader, loss_fn, device, use_amp=False, epoch=None
         if component_sums:
             postfix.update({
                 "mae_l": f"{component_sums['loss_mae'] / total_seen:.5f}",
-                "rmse_l": f"{component_sums['loss_rmse'] / total_seen:.6f}",
+                "mse_l": f"{component_sums['loss_mse'] / total_seen:.6f}",
                 "grad_l": f"{component_sums['loss_grad'] / total_seen:.5f}",
                 "ssim_l": f"{component_sums['loss_ssim'] / total_seen:.5f}",
             })
@@ -503,7 +503,7 @@ def main():
             msg += (
                 f" | raw: "
                 f"mae={val_metrics['loss_mae']:.5f} "
-                f"rmse={val_metrics['loss_rmse']:.7f} "
+                f"mse={val_metrics['loss_mse']:.7f} "
                 f"grad={val_metrics['loss_grad']:.5f} "
                 f"ssim={val_metrics['loss_ssim']:.5f}"
             )
@@ -512,7 +512,7 @@ def main():
             msg += (
                 f" | weighted: "
                 f"mae={val_metrics['w_loss_mae']:.5f} "
-                f"rmse={val_metrics['w_loss_rmse']:.7f} "
+                f"mse={val_metrics['w_loss_mse']:.7f} "
                 f"grad={val_metrics['w_loss_grad']:.5f} "
                 f"ssim={val_metrics['w_loss_ssim']:.5f}"
             )

@@ -5,13 +5,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 import json
+import math
 import time
+from collections import defaultdict
 from datetime import datetime
 from tqdm import tqdm
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.amp import autocast
+from torchmetrics.functional import (
+    peak_signal_noise_ratio as functional_psnr,
+    structural_similarity_index_measure as functional_ssim,
+)
 
 from datasets.rms_dataset import build_dataloaders
 from models.hrformer_regressor import HRFormerRadioMapRegressor
@@ -20,15 +28,6 @@ from utils import (
     set_seed,
     get_amp_device_type,
     summarize_trainable_by_module,
-)
-from losses import (
-    MAE,
-)
-from metrics import (
-    compute_rmse,
-    compute_nmse,
-    compute_psnr,
-    compute_ssim,
 )
 
 
@@ -44,8 +43,10 @@ def parse_args():
 
     # Output controls are run-specific rather than training configuration.
     parser.add_argument("--save-pred", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--save-npy", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save-error", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save-gt", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--save-gt-npy", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--cmap", type=str, default="jet")
     parser.add_argument("--error-vmax", type=float, default=0.3)
     parser.add_argument("--max-save", type=int, default=100)
@@ -224,6 +225,12 @@ def save_map_image(img, save_path, cmap="jet", vmin=None, vmax=None, title=None)
     plt.close(fig)
 
 
+def save_npy_map(img, save_path):
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    arr = tensor_to_image(img).astype(np.float32)
+    np.save(save_path, arr)
+
+
 def save_error_image(pred, gt, save_path, error_vmax):
     error = torch.abs(pred - gt)
     save_map_image(img=error, save_path=save_path, cmap="hot", vmin=0.0, vmax=error_vmax)
@@ -291,20 +298,71 @@ def sync_if_cuda(device, gpu_ids):
             torch.cuda.synchronize(gpu_id)
 
 
+def calculate_radiomamba_metrics_for_pair(pred_tensor, target_tensor):
+    """Compute metrics in the same per-sample style as RadioMamba."""
+    pred_tensor = pred_tensor.float()
+    target_tensor = target_tensor.float()
+
+    if pred_tensor.ndim == 2:
+        pred_tensor = pred_tensor.unsqueeze(0).unsqueeze(0)
+    elif pred_tensor.ndim == 3:
+        pred_tensor = pred_tensor.unsqueeze(0)
+
+    if target_tensor.ndim == 2:
+        target_tensor = target_tensor.unsqueeze(0).unsqueeze(0)
+    elif target_tensor.ndim == 3:
+        target_tensor = target_tensor.unsqueeze(0)
+
+    if pred_tensor.shape[1] > 1:
+        pred_tensor = pred_tensor[:, :1]
+    if target_tensor.shape[1] > 1:
+        target_tensor = target_tensor[:, :1]
+
+    mse = F.mse_loss(pred_tensor, target_tensor, reduction="mean").item()
+    rmse = math.sqrt(mse)
+
+    target_squared_mean = F.mse_loss(
+        target_tensor,
+        torch.zeros_like(target_tensor),
+        reduction="mean",
+    ).item()
+    if target_squared_mean < 1e-9:
+        nmse = 0.0 if mse < 1e-9 else float("inf")
+    else:
+        nmse = mse / target_squared_mean
+
+    ssim = functional_ssim(pred_tensor, target_tensor, data_range=1.0).item()
+    psnr = functional_psnr(pred_tensor, target_tensor, data_range=1.0).item()
+    mae = F.l1_loss(pred_tensor, target_tensor, reduction="mean").item()
+
+    return {
+        "MAE": mae,
+        "MSE": mse,
+        "RMSE": rmse,
+        "NMSE": nmse,
+        "SSIM": ssim,
+        "PSNR": psnr,
+    }
+
+
 @torch.no_grad()
 def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
     model.eval()
-    pred_all = []
-    gt_all = []
 
     pred_dir = os.path.join(save_folder, "pred_png")
+    pred_npy_dir = os.path.join(save_folder, "pred_npy")
     gt_dir = os.path.join(save_folder, "gt_png")
+    gt_npy_dir = os.path.join(save_folder, "gt_npy")
     err_dir = os.path.join(save_folder, "error_png")
 
     if args.save_pred:
         os.makedirs(pred_dir, exist_ok=True)
+    if args.save_npy:
+        os.makedirs(pred_npy_dir, exist_ok=True)
     if args.save_gt:
         os.makedirs(gt_dir, exist_ok=True)
+    if args.save_gt_npy:
+        os.makedirs(gt_npy_dir, exist_ok=True)
     if args.save_error:
         os.makedirs(err_dir, exist_ok=True)
 
@@ -312,6 +370,8 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
     amp_device_type = get_amp_device_type(device)
     total_forward_time_sec = 0.0
     total_infer_samples = 0
+    metric_sums = defaultdict(float)
+    metric_count = 0
 
     reset_cuda_peak_memory(device, gpu_ids)
 
@@ -319,7 +379,7 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
         x, y, names = unpack_batch(batch, device)
 
         # Measure only model forward time. This excludes data loading, CPU transfer,
-        # metric computation, and PNG saving overhead.
+        # metric computation, and PNG/NPY saving overhead.
         sync_if_cuda(device, gpu_ids)
         start_time = time.perf_counter()
         with autocast(device_type=amp_device_type, enabled=use_amp):
@@ -331,15 +391,13 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
         total_forward_time_sec += elapsed
         total_infer_samples += batch_size
 
-        pred_all.append(pred.detach().cpu())
-        gt_all.append(y.detach().cpu())
+        for b in range(pred.size(0)):
+            sample_metrics = calculate_radiomamba_metrics_for_pair(pred[b], y[b])
+            for k, v in sample_metrics.items():
+                metric_sums[k] += float(v)
+            metric_count += 1
 
         for b in range(x.size(0)):
-            should_save = args.max_save < 0 or global_idx < args.max_save
-            if not should_save:
-                global_idx += 1
-                continue
-
             if names is not None:
                 name = os.path.splitext(str(names[b]))[0]
             else:
@@ -349,30 +407,39 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
             gt_b = y[b].detach().cpu()
             sample_mae = torch.mean(torch.abs(pred_b - gt_b)).item()
 
-            if args.save_pred:
-                save_map_image(
-                    img=pred_b,
-                    save_path=os.path.join(pred_dir, f"{name}_mae_{sample_mae:.4f}.png"),
-                    cmap=args.cmap,
-                )
-            if args.save_gt:
-                save_map_image(
-                    img=gt_b,
-                    save_path=os.path.join(gt_dir, f"{name}_gt.png"),
-                    cmap=args.cmap,
-                )
-            if args.save_error:
-                save_error_image(
-                    pred=pred_b,
-                    gt=gt_b,
-                    save_path=os.path.join(err_dir, f"{name}_error.png"),
-                    error_vmax=args.error_vmax,
-                )
+            should_save_png = args.max_save < 0 or global_idx < args.max_save
+            if args.save_npy:
+                save_npy_map(pred_b, os.path.join(pred_npy_dir, f"{name}.npy"))
+            if args.save_gt_npy:
+                save_npy_map(gt_b, os.path.join(gt_npy_dir, f"{name}.npy"))
+
+            if should_save_png:
+                if args.save_pred:
+                    save_map_image(
+                        img=pred_b,
+                        save_path=os.path.join(pred_dir, f"{name}_mae_{sample_mae:.4f}.png"),
+                        cmap=args.cmap,
+                    )
+                if args.save_gt:
+                    save_map_image(
+                        img=gt_b,
+                        save_path=os.path.join(gt_dir, f"{name}_gt.png"),
+                        cmap=args.cmap,
+                    )
+                if args.save_error:
+                    save_error_image(
+                        pred=pred_b,
+                        gt=gt_b,
+                        save_path=os.path.join(err_dir, f"{name}_error.png"),
+                        error_vmax=args.error_vmax,
+                    )
 
             global_idx += 1
 
-    pred_all = torch.cat(pred_all, dim=0).float()
-    gt_all = torch.cat(gt_all, dim=0).float()
+    avg_metrics = {
+        k: float(v / max(1, metric_count))
+        for k, v in metric_sums.items()
+    }
     avg_inference_time_sec = (
         total_forward_time_sec / total_infer_samples
         if total_infer_samples > 0
@@ -381,11 +448,13 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
     memory_profile = get_memory_profile(device, gpu_ids)
 
     return {
-        "MAE": float(MAE(gt_all, pred_all)),
-        "RMSE": float(compute_rmse(pred_all, gt_all)),
-        "NMSE": float(compute_nmse(pred_all, gt_all)),
-        "PSNR": float(compute_psnr(pred_all, gt_all)),
-        "SSIM": float(compute_ssim(pred_all, gt_all)),
+        "MAE": avg_metrics.get("MAE", float("nan")),
+        "MSE": avg_metrics.get("MSE", float("nan")),
+        "RMSE": avg_metrics.get("RMSE", float("nan")),
+        "NMSE": avg_metrics.get("NMSE", float("nan")),
+        "PSNR": avg_metrics.get("PSNR", float("nan")),
+        "SSIM": avg_metrics.get("SSIM", float("nan")),
+        "metric_protocol": "radiomamba_per_sample_torchmetrics_float",
         "total_forward_time_sec": float(total_forward_time_sec),
         "avg_inference_time_sec_per_sample": float(avg_inference_time_sec),
         "avg_inference_time_ms_per_sample": float(avg_inference_time_sec * 1000.0),
@@ -430,9 +499,14 @@ def main():
         use_amp=use_amp,
     )
 
+    metrics_json_path = os.path.join(save_folder, "metrics.json")
+    with open(metrics_json_path, "w", encoding="utf-8") as f_json:
+        json.dump(metrics, f_json, indent=2)
+
     log_path = os.path.join(save_folder, "log.txt")
     with open(log_path, "a") as f:
         f.write("model: HRFormerRadioMapRegressor\n")
+        f.write("metric_protocol: RadioMamba per-sample torchmetrics, float prediction\n")
         f.write(f"config_path: {args.config_path}\n")
         f.write(f"weight_path: {args.weight_path}\n")
         f.write(f"gpus: {runtime_gpus}\n")
@@ -465,18 +539,20 @@ def main():
                 f"peak_reserved: {memory['peak_reserved_mb']:.2f} MB\n"
             )
         f.write("\nResults\n")
-        f.write(f"MAE : {metrics['MAE']:.4f}\n")
-        f.write(f"RMSE : {metrics['RMSE']:.4f}\n")
-        f.write(f"NMSE : {metrics['NMSE']:.4f}\n")
-        f.write(f"PSNR : {metrics['PSNR']:.2f} dB\n")
-        f.write(f"SSIM : {metrics['SSIM']:.4f}\n")
+        f.write(f"MAE : {metrics['MAE']:.6f}\n")
+        f.write(f"MSE : {metrics['MSE']:.6f}\n")
+        f.write(f"RMSE : {metrics['RMSE']:.6f}\n")
+        f.write(f"NMSE : {metrics['NMSE']:.6f}\n")
+        f.write(f"PSNR : {metrics['PSNR']:.4f} dB\n")
+        f.write(f"SSIM : {metrics['SSIM']:.6f}\n")
 
     print("\nResults")
-    print(f"MAE : {metrics['MAE']:.4f}")
-    print(f"RMSE : {metrics['RMSE']:.4f}")
-    print(f"NMSE : {metrics['NMSE']:.4f}")
-    print(f"PSNR : {metrics['PSNR']:.2f} dB")
-    print(f"SSIM : {metrics['SSIM']:.4f}")
+    print(f"MAE : {metrics['MAE']:.6f}")
+    print(f"MSE : {metrics['MSE']:.6f}")
+    print(f"RMSE : {metrics['RMSE']:.6f}")
+    print(f"NMSE : {metrics['NMSE']:.6f}")
+    print(f"PSNR : {metrics['PSNR']:.4f} dB")
+    print(f"SSIM : {metrics['SSIM']:.6f}")
     print("\nModel Profile")
     print(f"Total params: {model_profile['total_params']:,}")
     print(f"Model size(param+buffer): {model_profile['model_size_mb']:.2f} MB")
@@ -489,6 +565,7 @@ def main():
             f"{memory['peak_reserved_mb']:.2f} MB reserved"
         )
     print(f"Saved to: {save_folder}")
+    print(f"Saved metrics JSON to: {metrics_json_path}")
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ python train_hrformer.py \
 
 # evaluation
 python evaluate_hrformer.py \
-  --config-path ./configs/hrt.json \
+  --config-path ./configs/carsdpm_downstream.json \
   --weight-path /path/to/best.pth \
   --split test \
   --save-root ./save_eval

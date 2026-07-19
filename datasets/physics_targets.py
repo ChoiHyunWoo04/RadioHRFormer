@@ -16,8 +16,8 @@ class PhysicsTargetBuilder(nn.Module):
         singularity: RadioDiff-k2-inspired inverted negative-k2 map.
         radial_gain: label-free log-distance Tx gain prior computed online from x.
         obstacle_sum: precomputed normalized ray-obstruction integral.
-        obstacle_saturating_a003: precomputed 1-exp(-0.03 * obstruction length).
-        obstacle_saturating_a005: precomputed 1-exp(-0.05 * obstruction length).
+        obstacle_saturating_a003: precomputed exp(-0.03 * obstruction length).
+        obstacle_saturating_a005: precomputed exp(-0.05 * obstruction length).
 
     Obstacle inversion:
         Set invert_obstacle_targets=True to transform any loaded obstacle map
@@ -533,7 +533,7 @@ class PhysicsTargetBuilder(nn.Module):
                 #
                 # Only obstacle_sum is still an obstruction map. If you explicitly request
                 # inverted obstacle_sum, invert only this target.
-                if self.invert_obstacle_targets or name == "obstacle_sum":
+                if self.invert_obstacle_targets and name == "obstacle_sum":
                     target = 1.0 - target
 
                 targets[name] = target
