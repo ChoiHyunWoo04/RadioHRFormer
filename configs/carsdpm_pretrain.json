@@ -1,7 +1,8 @@
 {
   "seed": 42,
-  "runtime": {"gpus": [2], "amp": true},
+  "runtime": {"gpus": [1], "amp": true},
   "precompute_obstacle": {
+    "save_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle",
     "splits": ["train", "val"],
     "batch_size": 1,
     "num_workers": 0,
@@ -102,23 +103,15 @@
   },
 
   "physics": {
-    "targets": ["radial_gain","obstacle_saturating_a005"],
+    "targets": ["radial_gain","obstacle_saturating_a007"],
     "field_mode": "normalized_power",
-    "gaussian_sigma": 2.0,
     "tx_channel": -1,
     "building_threshold": 0.5,
     "obstacle_channels": [0,1],
     "ray_stride": 1,
     "invert_obstacle_targets": false,
     "geo_precompute_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle/",
-    "geo_mode_name": null,
-    "radiodiff_pathloss_trunc": -147.0,
-    "radiodiff_pathloss_max": -47.0,
-    "radiodiff_source_power_dbm": 23.0,
-    "radiodiff_h": 1.0,
-    "radiodiff_border_value": 1.0,
-    "radiodiff_eps": 1e-30,
-    "radiodiff_smooth_sigma": 0.9
+    "geo_mode_name": null
   },
   "visualize": {
     "save_dir": "./save/visual_pretrain_targets",
@@ -132,7 +125,9 @@
     "targets": [
       "radial_gain",
       "obstacle_saturating_a005",
+      "obstacle_saturating_a006",
       "obstacle_saturating_a007",
+      "obstacle_saturating_a008",
       "obstacle_saturating_a009"
     ],
     "dpi": 180

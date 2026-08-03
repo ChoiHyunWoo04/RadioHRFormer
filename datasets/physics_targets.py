@@ -49,7 +49,9 @@ class PhysicsTargetBuilder(nn.Module):
     PRECOMPUTED_GEO_TARGETS = {
         "obstacle_sum",
         "obstacle_saturating_a005",
+        "obstacle_saturating_a006",
         "obstacle_saturating_a007",
+        "obstacle_saturating_a008",
         "obstacle_saturating_a009",
     }
 
@@ -60,7 +62,9 @@ class PhysicsTargetBuilder(nn.Module):
         "radial_gain",
         "obstacle_sum",
         "obstacle_saturating_a005",
+        "obstacle_saturating_a006",
         "obstacle_saturating_a007",
+        "obstacle_saturating_a008",
         "obstacle_saturating_a009",
     }
 

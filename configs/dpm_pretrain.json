@@ -35,7 +35,7 @@
       "variant": "hrt_small",
       "pretrained": null,
       "extra": {
-        "drop_path_rate": 0.3,
+        "drop_path_rate": 0.25,
 
         "stage1": {
           "num_modules": 1,
@@ -52,7 +52,7 @@
           "num_branches": 2,
           "block": "TRANSFORMER_BLOCK",
           "num_blocks": [2, 2],
-          "num_channels": [32, 64],
+          "num_channels": [48, 64],
           "num_heads": [1, 2],
           "num_mlp_ratios": [4, 4],
           "num_window_sizes": [8, 8]
@@ -63,7 +63,7 @@
           "num_branches": 3,
           "block": "TRANSFORMER_BLOCK",
           "num_blocks": [2, 2, 2],
-          "num_channels": [32, 64, 128],
+          "num_channels": [48, 64, 128],
           "num_heads": [1, 2, 4],
           "num_mlp_ratios": [4, 4, 4],
           "num_window_sizes": [8, 8, 8]
@@ -74,7 +74,7 @@
           "num_branches": 4,
           "block": "TRANSFORMER_BLOCK",
           "num_blocks": [2, 2, 2, 2],
-          "num_channels": [32, 64, 128, 256],
+          "num_channels": [48, 64, 128, 256],
           "num_heads": [1, 2, 4, 8],
           "num_mlp_ratios": [4, 4, 4, 4],
           "num_window_sizes": [8, 8, 8, 8],
@@ -85,7 +85,7 @@
 
     "decoder": {
       "type": "HRFormerSkipDecoder",
-      "in_channels": 32,
+      "in_channels": 48,
       "stem2_channels": 64,
       "stem1_channels": 64,
       "hidden_channels": 64,
@@ -111,14 +111,7 @@
     "ray_stride": 1,
     "invert_obstacle_targets": true,
     "geo_precompute_root": "/home/ailab/Desktop/hwchoi/radiohrformer/data/precomputed_obstacle/",
-    "geo_mode_name": null,
-    "radiodiff_pathloss_trunc": -147.0,
-    "radiodiff_pathloss_max": -47.0,
-    "radiodiff_source_power_dbm": 23.0,
-    "radiodiff_h": 1.0,
-    "radiodiff_border_value": 1.0,
-    "radiodiff_eps": 1e-30,
-    "radiodiff_smooth_sigma": 0.9
+    "geo_mode_name": null
   },
   "visualize": {
     "save_dir": "./save/visual_pretrain_targets",

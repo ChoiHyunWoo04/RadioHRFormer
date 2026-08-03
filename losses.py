@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_msssim import msssim
+from pytorch_msssim import ms_ssim
 
 
 # l1_loss
@@ -66,7 +66,7 @@ class JointLoss(nn.Module):
             pred_fp32 = pred.float()
             target_fp32 = target.float()
 
-            ssim_score = msssim(
+            ssim_score = ms_ssim(
                 pred_fp32,
                 target_fp32,
                 data_range=self.data_range,

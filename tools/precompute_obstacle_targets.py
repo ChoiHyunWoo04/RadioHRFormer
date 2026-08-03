@@ -12,8 +12,7 @@ from utils import set_seed, prepare_device
 
 
 # Every saved .pt contains only:
-#   obstacle_sum
-#   obstacle_saturating_a005
+#   obstacle_saturating_a007
 #
 # All settings are read from the shared JSON config.
 # Required CLI argument: --config-path ./configs/hrt.json
@@ -213,7 +212,8 @@ def alpha_to_key(alpha: float) -> str:
     return f"obstacle_saturating_a{int(round(alpha * 100)):03d}"
 
 
-OBSTACLE_ALPHAS = (0.05, 0.07, 0.09)
+#OBSTACLE_ALPHAS = (0.05, 0.07, 0.09)
+OBSTACLE_ALPHAS = (0.06, 0.08)
 
 
 @torch.no_grad()
@@ -278,9 +278,10 @@ def compute_obstacle_targets(
                 # precomputed inverted saturating / transmission prior
                 target_map[0, y1, x1] = torch.exp(-float(alpha) * hit_length)
 
-    targets = {
-        "obstacle_sum": minmax(obstacle_sum_raw).cpu(),
-    }
+    #targets = {
+    #    "obstacle_sum": minmax(obstacle_sum_raw).cpu(),
+    #}
+    targets = {}
 
     for alpha, target_map in obstacle_transmission_maps.items():
         targets[alpha_to_key(alpha)] = target_map.clamp(0.0, 1.0).cpu()
@@ -313,7 +314,10 @@ def unpack_batch(batch):
 
 
 def save_manifest(save_base, cfg, options):
-    target_keys = ["obstacle_sum"] + [
+    #target_keys = ["obstacle_sum"] + [
+    #    alpha_to_key(alpha) for alpha in OBSTACLE_ALPHAS
+    #]
+    target_keys = [
         alpha_to_key(alpha) for alpha in OBSTACLE_ALPHAS
     ]
     print(f"[INFO] target keys       : {target_keys}")
