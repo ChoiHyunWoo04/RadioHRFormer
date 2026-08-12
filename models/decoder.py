@@ -13,20 +13,20 @@ class RegressionDecoder(nn.Module):
             nn.Upsample(scale_factor=2, mode='bilinear'),   # 64x64 -> 128x128
             nn.Conv2d(backbone_channels, extended_dim, kernel_size=3, padding=1),
             nn.BatchNorm2d(extended_dim),
-            nn.GELU(),
+            nn.ReLU(),
             
             nn.Conv2d(extended_dim, extended_dim, kernel_size=3, padding=1),
             nn.BatchNorm2d(extended_dim), 
-            nn.GELU(),
+            nn.ReLU(),
             
             nn.Upsample(scale_factor=2, mode='bilinear'),   # 128x128 -> 256x256
             nn.Conv2d(extended_dim, extended_dim, kernel_size=3, padding=1),
             nn.BatchNorm2d(extended_dim),
-            nn.GELU(),
+            nn.ReLU(),
             
             nn.Conv2d(extended_dim, extended_dim, kernel_size=3, padding=1),
             nn.BatchNorm2d(extended_dim), 
-            nn.GELU(),
+            nn.ReLU(),
             
             nn.Conv2d(extended_dim, out_channels, kernel_size=1, padding=0)
         )

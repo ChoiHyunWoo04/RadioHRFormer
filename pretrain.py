@@ -118,7 +118,6 @@ def resolve_options(cfg):
         "seed": cfg_get(cfg, ["seed"], 42),
         "batch_size": cfg_get(cfg, ["data", "batch_size"], 32),
         "target_type": cfg_get(cfg, ["data", "target_type"], "DPM"),
-        "invert_obstacle_targets": cfg_get(cfg, ["physics", "invert_obstacle_targets"], False),
     }
 
 
@@ -222,7 +221,7 @@ def train_one_epoch(model, loader, target_builder, loss_fn, optimizer, device, s
     for batch in pbar:
         x, y, names = unpack_batch(batch, device)
         with torch.no_grad():
-            targets = target_builder(x, y, names=names)
+            targets = target_builder(x, names=names)
         optimizer.zero_grad(set_to_none=True)
         with autocast(device_type=amp_device_type, enabled=use_amp):
             preds = model(x)
@@ -254,7 +253,7 @@ def evaluate_one_epoch(model, loader, target_builder, loss_fn, device, use_amp, 
     pbar = tqdm(loader, desc=f"{split_name} Epoch {epoch}", leave=False)
     for batch in pbar:
         x, y, names = unpack_batch(batch, device)
-        targets = target_builder(x, y, names=names)
+        targets = target_builder(x, names=names)
         with autocast(device_type=amp_device_type, enabled=use_amp):
             preds = model(x)
             _, logs = loss_fn(preds, targets)
@@ -303,20 +302,7 @@ def make_target_builder(cfg, target_names, geo_split, device):
 
     return PhysicsTargetBuilder(
         target_names=target_names,
-        field_mode=physics_cfg.get("field_mode", "normalized_power"),
-        gaussian_sigma=float(physics_cfg.get("gaussian_sigma", 2.0)),
         tx_channel=int(physics_cfg.get("tx_channel", -1)),
-        building_threshold=float(physics_cfg.get("building_threshold", 0.5)),
-        obstacle_channels=parse_int_list(physics_cfg.get("obstacle_channels", [0, 1])),
-        ray_stride=int(physics_cfg.get("ray_stride", 1)),
-        invert_obstacle_targets=bool(physics_cfg.get("invert_obstacle_targets", False)),
-        radiodiff_pathloss_trunc=float(physics_cfg.get("radiodiff_pathloss_trunc", -147.0)),
-        radiodiff_pathloss_max=float(physics_cfg.get("radiodiff_pathloss_max", -47.0)),
-        radiodiff_source_power_dbm=float(physics_cfg.get("radiodiff_source_power_dbm", 23.0)),
-        radiodiff_h=float(physics_cfg.get("radiodiff_h", 1.0)),
-        radiodiff_border_value=float(physics_cfg.get("radiodiff_border_value", 1.0)),
-        radiodiff_eps=float(physics_cfg.get("radiodiff_eps", 1e-30)),
-        radiodiff_smooth_sigma=float(physics_cfg.get("radiodiff_smooth_sigma", 0.9)),
         geo_precompute_root=physics_cfg.get("geo_precompute_root"),
         geo_mode_name=geo_mode_name,
         geo_split=geo_split,
@@ -331,7 +317,7 @@ def main():
     opts = resolve_options(cfg)
 
     physics_cfg = cfg_get(cfg, ["physics"], {})
-    raw_target_names = tuple(physics_cfg.get("targets", ["grad", "lap", "los", "obstacle"]))
+    raw_target_names = tuple(physics_cfg.get("targets", ["radial_gain","obstacle_saturating_a007"]))
     target_names = PhysicsTargetBuilder.normalize_target_names(raw_target_names)
     head_specs = PhysicsTargetBuilder.head_specs(target_names)
 
@@ -340,7 +326,6 @@ def main():
     opts.update(
         {
             "physics_targets": target_names,
-            "field_mode": physics_cfg.get("field_mode", "normalized_power"),
             "geo_precompute_root": physics_cfg.get("geo_precompute_root"),
             "geo_mode_name": geo_mode_name,
         }

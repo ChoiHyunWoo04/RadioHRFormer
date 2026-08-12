@@ -32,9 +32,7 @@ class RadioMapSeerDataset(Dataset):
         num_tx: int = 80,
         target_type: str = "DPM",
         thresh: float = 0.0,
-        return_name: bool = True,
-        use_tx_gaussian_map: bool = True,
-        tx_gaussian_sigma: float = 6.0,
+        return_name: bool = True
     ):
         super().__init__()
 
@@ -66,9 +64,6 @@ class RadioMapSeerDataset(Dataset):
         self.thresh = thresh
         self.return_name = return_name
 
-        self.use_tx_gaussian_map = use_tx_gaussian_map
-        self.tx_gaussian_sigma = tx_gaussian_sigma
-
         self.dir_buildings = os.path.join(root_dir, "png", "buildings_complete")
         self.dir_tx = os.path.join(root_dir, "png", "antennas")
         self.dir_gain = os.path.join(root_dir, "gain", target_type)
@@ -93,41 +88,6 @@ class RadioMapSeerDataset(Dataset):
         if len(set(shapes)) != 1:
             raise ValueError(f"Shape mismatch among loaded maps: {shapes}")
 
-    @staticmethod
-    def _tx_to_gaussian(tx_img: np.ndarray, sigma: float = 6.0) -> np.ndarray:
-        """
-        Convert Tx antenna image to Gaussian heatmap.
-
-        tx_img: [H, W], usually sparse binary/gray Tx image.
-        return: [H, W], Gaussian map normalized to [0, 1].
-        """
-        h, w = tx_img.shape
-
-        # Tx 위치 추정: nonzero pixel들의 centroid 사용
-        ys, xs = np.where(tx_img > 0)
-
-        if len(xs) == 0:
-            # 혹시 Tx 이미지가 완전히 비어 있으면 최댓값 위치 사용
-            cy, cx = np.unravel_index(np.argmax(tx_img), tx_img.shape)
-        else:
-            cy = ys.mean()
-            cx = xs.mean()
-
-        yy, xx = np.meshgrid(
-            np.arange(h, dtype=np.float32),
-            np.arange(w, dtype=np.float32),
-            indexing="ij",
-        )
-
-        gaussian = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sigma ** 2))
-        gaussian = gaussian.astype(np.float32)
-
-        max_val = gaussian.max()
-        if max_val > 0:
-            gaussian = gaussian / max_val
-
-        return gaussian
-
     def __getitem__(self, idx):
         map_idx_in_split = idx // self.num_tx
         tx_idx_in_map = idx % self.num_tx
@@ -139,10 +99,6 @@ class RadioMapSeerDataset(Dataset):
         building = self._read_gray(os.path.join(self.dir_buildings, building_name))
         tx = self._read_gray(os.path.join(self.dir_tx, sample_name))
         gain = self._read_gray(os.path.join(self.dir_gain, sample_name))
-
-        # Tx image -> Gaussian map
-        if self.use_tx_gaussian_map:
-            tx = self._tx_to_gaussian(tx, sigma=self.tx_gaussian_sigma)
 
         if self.target_type == "carsDPM":
             second_channel = self._read_gray(os.path.join(self.dir_cars, building_name))
@@ -179,18 +135,13 @@ def build_dataloaders(cfg, return_datasets: bool = False):
     pin_memory = data_cfg.get("pin_memory", True)
     persistent_workers = data_cfg.get("persistent_workers", False) and num_workers > 0
 
-    use_tx_gaussian_map = data_cfg.get("use_tx_gaussian_map", True)
-    tx_gaussian_sigma = data_cfg.get("tx_gaussian_sigma", 6.0)
-
     train_dataset = RadioMapSeerDataset(
         root_dir=data_cfg["root_dir"],
         split="train",
         num_tx=num_tx,
         target_type=target_type,
         thresh=thresh,
-        return_name=return_name,
-        use_tx_gaussian_map=use_tx_gaussian_map,
-        tx_gaussian_sigma=tx_gaussian_sigma,
+        return_name=return_name
     )
 
     val_dataset = RadioMapSeerDataset(
@@ -199,9 +150,7 @@ def build_dataloaders(cfg, return_datasets: bool = False):
         num_tx=num_tx,
         target_type=target_type,
         thresh=thresh,
-        return_name=return_name,
-        use_tx_gaussian_map=use_tx_gaussian_map,
-        tx_gaussian_sigma=tx_gaussian_sigma,
+        return_name=return_name
     )
 
     test_dataset = RadioMapSeerDataset(
@@ -210,9 +159,7 @@ def build_dataloaders(cfg, return_datasets: bool = False):
         num_tx=num_tx,
         target_type=target_type,
         thresh=thresh,
-        return_name=return_name,
-        use_tx_gaussian_map=use_tx_gaussian_map,
-        tx_gaussian_sigma=tx_gaussian_sigma,
+        return_name=return_name
     )
 
     train_loader = DataLoader(

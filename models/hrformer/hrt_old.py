@@ -336,16 +336,8 @@ class HRT(nn.Module):
 
         # stem net
         self.norm1_name, norm1 = build_norm_layer(self.norm_cfg, 64, postfix=1)
-        self.norm1_refine_name, norm1_refine = build_norm_layer(
-            self.norm_cfg, 64, postfix="1_refine"
-        )
-
         self.norm2_name, norm2 = build_norm_layer(self.norm_cfg, 64, postfix=2)
-        self.norm2_refine_name, norm2_refine = build_norm_layer(
-            self.norm_cfg, 64, postfix="2_refine"
-        )
 
-        # 256 -> 128
         self.conv1 = build_conv_layer(
             self.conv_cfg,
             in_channels,
@@ -357,42 +349,10 @@ class HRT(nn.Module):
         )
         self.add_module(self.norm1_name, norm1)
 
-        # 128 -> 128, resolution 유지
-        self.conv1_refine = build_conv_layer(
-            self.conv_cfg,
-            64,
-            64,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            bias=False,
-        )
-        self.add_module(self.norm1_refine_name, norm1_refine)
-
-        # 128 -> 64
         self.conv2 = build_conv_layer(
-            self.conv_cfg,
-            64,
-            64,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False,
+            self.conv_cfg, 64, 64, kernel_size=3, stride=2, padding=1, bias=False
         )
         self.add_module(self.norm2_name, norm2)
-
-        # 64 -> 64, resolution 유지
-        self.conv2_refine = build_conv_layer(
-            self.conv_cfg,
-            64,
-            64,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            bias=False,
-        )
-        self.add_module(self.norm2_refine_name, norm2_refine)
-
         self.relu = nn.ReLU(inplace=True)
 
         # generat drop path rate list
@@ -471,14 +431,6 @@ class HRT(nn.Module):
     def norm2(self):
         """nn.Module: the normalization layer named "norm2" """
         return getattr(self, self.norm2_name)
-
-    @property
-    def norm1_refine(self):
-        return getattr(self, self.norm1_refine_name)
-
-    @property
-    def norm2_refine(self):
-        return getattr(self, self.norm2_refine_name)
 
     def _make_transition_layer(self, num_channels_pre_layer, num_channels_cur_layer):
         """Make transition layer."""
@@ -673,28 +625,14 @@ class HRT(nn.Module):
 
     def forward(self, x, return_stem_features=False):
         """Forward function."""
-        # 256 -> 128
         x = self.conv1(x)
         x = self.norm1(x)
         x = self.relu(x)
-
-        # 128 -> 128, resolution 유지
-        x = self.conv1_refine(x)
-        x = self.norm1_refine(x)
-        x = self.relu(x)
-
-        stem1 = x  # [B, 64, 128, 128]
-
-        # 128 -> 64
+        stem1 = x # [B, 64, 128, 128]
+        
         x = self.conv2(x)
         x = self.norm2(x)
         x = self.relu(x)
-
-        # 64 -> 64, resolution 유지
-        x = self.conv2_refine(x)
-        x = self.norm2_refine(x)
-        x = self.relu(x)
-
         stem2 = x  # [B, 64, 64, 64]
         
         x = self.layer1(x)

@@ -212,8 +212,8 @@ def alpha_to_key(alpha: float) -> str:
     return f"obstacle_saturating_a{int(round(alpha * 100)):03d}"
 
 
-#OBSTACLE_ALPHAS = (0.05, 0.07, 0.09)
-OBSTACLE_ALPHAS = (0.06, 0.08)
+#OBSTACLE_ALPHAS = (0.05, 0.06, 0.07, 0.08 0.09)
+OBSTACLE_ALPHAS = (0.07,)
 
 
 @torch.no_grad()

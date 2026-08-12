@@ -102,14 +102,11 @@
   },
 
   "physics": {
-    "targets": ["radial_gain","obstacle_saturating_a005"],
-    "field_mode": "normalized_power",
-    "gaussian_sigma": 2.0,
+    "targets": ["radial_gain","obstacle_saturating_a007"],
     "tx_channel": -1,
     "building_threshold": 0.5,
     "obstacle_channels": [0,1],
     "ray_stride": 1,
-    "invert_obstacle_targets": true,
     "geo_precompute_root": "/home/ailab/Desktop/hwchoi/radiohrformer/data/precomputed_obstacle/",
     "geo_mode_name": null
   },
@@ -124,7 +121,7 @@
     "save_inverted_obstacle_targets": true,
     "targets": [
       "radial_gain",
-      "obstacle_saturating_a005"
+      "obstacle_saturating_a007"
     ],
     "dpi": 180
   }

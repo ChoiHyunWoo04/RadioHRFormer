@@ -1,5 +1,6 @@
 /baselines/
 /data/
+/runs/
 /save/
 /save_eval/
 /save_pretrain/

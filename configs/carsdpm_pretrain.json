@@ -1,6 +1,6 @@
 {
   "seed": 42,
-  "runtime": {"gpus": [1], "amp": true},
+  "runtime": {"gpus": [2], "amp": true},
   "precompute_obstacle": {
     "save_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle",
     "splits": ["train", "val"],
@@ -95,7 +95,7 @@
   },
 
   "pretrain": {
-    "epochs": 100,
+    "epochs": 150,
     "lr": 0.0001,
     "weight_decay": 0.0005,
     "warmup_epochs": 5,
@@ -104,12 +104,10 @@
 
   "physics": {
     "targets": ["radial_gain","obstacle_saturating_a007"],
-    "field_mode": "normalized_power",
     "tx_channel": -1,
     "building_threshold": 0.5,
     "obstacle_channels": [0,1],
     "ray_stride": 1,
-    "invert_obstacle_targets": false,
     "geo_precompute_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle/",
     "geo_mode_name": null
   },
