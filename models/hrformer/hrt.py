@@ -4,6 +4,16 @@
 # Licensed under The MIT License [see LICENSE for details]
 # Written by Rao Fu, RainbowSecret
 # --------------------------------------------------------
+#
+# Modifications for RadioHRFormer:
+# - Added an additional Conv-BN-ReLU refinement block after
+#   each strided convolution in the stem.
+# - Exposed intermediate stem features (stem1 and stem2)
+#   for skip connections in the radio-map regression decoder.
+#
+# The modifications above are not part of the original
+# HRFormer implementation.
+# --------------------------------------------------------
 
 import pdb
 import torch

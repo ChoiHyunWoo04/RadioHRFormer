@@ -15,6 +15,7 @@ from torch.amp import autocast, GradScaler
 
 from datasets.rms_dataset import build_dataloaders
 from datasets.physics_targets import PhysicsTargetBuilder, PhysicsPretrainLoss
+from losses import JointLoss
 from models.hrformer_regressor import HRFormerPhysicsPretrainer
 from utils import (
     set_seed,
@@ -31,29 +32,6 @@ def parse_args():
     p.add_argument("--resume", type=str, default=None)
     p.add_argument("--eval-split", choices=["val", "valid", "test"], default="val")
     p.add_argument("--save-every", type=int, default=0)
-
-    # Optional overrides for offline-precomputed geometry targets.
-    # When omitted, values in cfg["physics"] are used unchanged.
-    p.add_argument(
-        "--geo-precompute-root",
-        type=str,
-        default=None,
-        help=(
-            "Optional root of precomputed geometry .pt files. Overrides "
-            "physics.geo_precompute_root in the JSON config. Expected layout: "
-            "<root>/<geo_mode_name>/<split>/<sample_name>.pt"
-        ),
-    )
-    p.add_argument(
-        "--geo-mode-name",
-        type=str,
-        default=None,
-        help=(
-            "Optional folder name under --geo-precompute-root. Overrides "
-            "physics.geo_mode_name in the JSON config. If omitted, the script "
-            "uses the configured value or '<input_mode>_<target_type>'."
-        ),
-    )
     return p.parse_args()
 
 
@@ -75,19 +53,6 @@ def cfg_get(cfg, keys, default=None):
             return default
         cur = cur[key]
     return cur
-
-
-def apply_precompute_overrides(cfg, args):
-    """Apply only explicit CLI overrides for the offline geometry-target directory."""
-    cfg = copy.deepcopy(cfg)
-    cfg.setdefault("physics", {})
-
-    if args.geo_precompute_root is not None:
-        cfg["physics"]["geo_precompute_root"] = args.geo_precompute_root
-    if args.geo_mode_name is not None:
-        cfg["physics"]["geo_mode_name"] = args.geo_mode_name
-
-    return cfg
 
 
 def prepare_pretrain_config(cfg):
@@ -312,12 +277,11 @@ def make_target_builder(cfg, target_names, geo_split, device):
 def main():
     args = parse_args()
     cfg = load_config(args.config_path)
-    cfg = apply_precompute_overrides(cfg, args)
     cfg = prepare_pretrain_config(cfg)
     opts = resolve_options(cfg)
 
     physics_cfg = cfg_get(cfg, ["physics"], {})
-    raw_target_names = tuple(physics_cfg.get("targets", ["radial_gain","obstacle_saturating_a007"]))
+    raw_target_names = tuple(physics_cfg.get("targets", ["obstacle_saturating_a007"]))
     target_names = PhysicsTargetBuilder.normalize_target_names(raw_target_names)
     head_specs = PhysicsTargetBuilder.head_specs(target_names)
 

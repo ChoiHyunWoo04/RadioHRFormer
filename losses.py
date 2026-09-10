@@ -17,10 +17,10 @@ def MSE(y_pred, y_true):
 class JointLoss(nn.Module):
     def __init__(
         self,
-        mae_weight=0.35,
-        mse_weight=0.5,
-        grad_weight=0.25,
-        ssim_weight=0.15,
+        mae_weight=0.3,
+        mse_weight=0.6,
+        grad_weight=0.3,
+        ssim_weight=0.2,
         data_range=1.0,
     ):
         super().__init__()

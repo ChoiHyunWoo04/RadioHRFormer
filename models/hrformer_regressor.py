@@ -81,14 +81,6 @@ class HRFormerRadioMapRegressor(nn.Module):
                 extra=cfg["model"]["backbone"]["extra"],
                 norm_cfg=cfg["model"]["norm_cfg"],
             )
-
-        elif cfg["model"]["backbone"]["type"] == "HiLoHRT":
-            self.backbone = HiLoHRT(
-                in_channels=cfg["model"]["in_channels"],
-                extra=cfg["model"]["backbone"]["extra"],
-                norm_cfg=cfg["model"]["norm_cfg"],
-            )
-
         else:
             raise ValueError(f"Unsupported backbone type: {cfg['type']}")
 

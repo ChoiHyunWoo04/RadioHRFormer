@@ -1,10 +1,14 @@
 {
   "seed": 42,
-  "runtime": {"gpus": [2], "amp": true},
+  "runtime": {
+    "gpus": [1],
+    "amp": true
+  },
   "data": {
     "root_dir": "/home/ailab/Desktop/data/radiomapseer/",
+    "eval_dataset": "IRT4",
     "image_size": 256,
-    "num_tx": 80,
+    "num_tx": 2,
     "target_type": "DPM",
     "thresh": 0.0,
     "batch_size": 32,
@@ -29,7 +33,6 @@
       "pretrained": null,
       "extra": {
         "drop_path_rate": 0.35,
-
         "stage1": {
           "num_modules": 1,
           "num_branches": 1,
@@ -39,7 +42,6 @@
           "num_heads": [2],
           "num_mlp_ratios": [4]
         },
-
         "stage2": {
           "num_modules": 1,
           "num_branches": 2,
@@ -50,7 +52,6 @@
           "num_mlp_ratios": [4, 4],
           "num_window_sizes": [8, 8]
         },
-
         "stage3": {
           "num_modules": 4,
           "num_branches": 3,
@@ -61,7 +62,6 @@
           "num_mlp_ratios": [4, 4, 4],
           "num_window_sizes": [8, 8, 8]
         },
-
         "stage4": {
           "num_modules": 4,
           "num_branches": 4,
@@ -75,7 +75,6 @@
         }
       }
     },
-
     "decoder": {
       "type": "HRFormerSkipDecoder",
       "in_channels": 48,

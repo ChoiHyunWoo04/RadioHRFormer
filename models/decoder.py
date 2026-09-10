@@ -56,7 +56,7 @@ class HRFormerSkipDecoderBody(nn.Module):
 
     def __init__(
         self,
-        backbone_channels=32,
+        backbone_channels=48,
         stem2_channels=64,
         stem1_channels=64,
         hidden_channels=64,
@@ -109,7 +109,7 @@ class HRFormerSkipDecoder(nn.Module):
 
     def __init__(
         self,
-        backbone_channels=32,
+        backbone_channels=48,
         stem2_channels=64,
         stem1_channels=64,
         hidden_channels=64,
@@ -147,7 +147,7 @@ class MultiHeadPhysicsDecoder(nn.Module):
 
     def __init__(
         self,
-        backbone_channels=32,
+        backbone_channels=48,
         stem2_channels=64,
         stem1_channels=64,
         hidden_channels=64,

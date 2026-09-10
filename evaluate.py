@@ -16,10 +16,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.amp import autocast
-from torchmetrics.functional import (
-    peak_signal_noise_ratio as functional_psnr,
-    structural_similarity_index_measure as functional_ssim,
-)
+from torchmetrics.functional import structural_similarity_index_measure
 
 from datasets.rms_dataset import build_dataloaders
 from models.hrformer_regressor import HRFormerRadioMapRegressor
@@ -47,7 +44,15 @@ def parse_args():
     parser.add_argument("--save-error", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save-gt", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--save-gt-npy", action=argparse.BooleanOptionalAction, default=False)
+    # Kept for CLI backward compatibility. Prediction/GT PNGs use the paper-style
+    # RGB renderer below; scalar error maps keep their own fixed colormap.
     parser.add_argument("--cmap", type=str, default="jet")
+    parser.add_argument(
+        "--obstacle-threshold",
+        type=float,
+        default=0.5,
+        help="Threshold used to convert building/car input channels to binary masks for PNG overlay.",
+    )
     parser.add_argument("--error-vmax", type=float, default=0.3)
     parser.add_argument("--max-save", type=int, default=100)
     return parser.parse_args()
@@ -136,6 +141,7 @@ def resolve_runtime(cfg):
         )
 
     primary_gpu = gpu_ids[0]
+    torch.cuda.set_device(primary_gpu)
     device = torch.device(f"cuda:{primary_gpu}")
     use_amp = bool(cfg_get(cfg, ["runtime", "amp"], True))
     return device, gpu_ids, use_amp
@@ -212,7 +218,94 @@ def tensor_to_image(x):
     return x.numpy()
 
 
+def _single_channel_numpy(img):
+    """Convert [1,H,W] / [H,W] tensor-like input to a float32 [H,W] array."""
+    arr = tensor_to_image(img).astype(np.float32)
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
+    if arr.ndim != 2:
+        raise ValueError(f"Expected a single-channel map, got shape={arr.shape}.")
+    return arr
+
+
+def build_paper_rgb_map(
+    field,
+    input_map,
+    target_type="DPM",
+    obstacle_threshold=0.5,
+):
+    """Create the RadioMapSeer-style qualitative RGB visualization.
+
+    Color convention follows the qualitative figures used by RadioUNet/RadioDiff:
+      - radio/path-gain field: black -> yellow, with normalized field intensity
+      - static buildings: blue
+      - vehicles/cars: red
+
+    The model output is *not* per-image min-max normalized. Values are only clipped
+    to [0,1], preserving the common RadioMapSeer gray-level scale across samples.
+
+    Expected input channel order in this project:
+      cars_input=False: [building, building, Tx]
+      cars_input=True : [building, cars, Tx]
+    """
+    field_arr = _single_channel_numpy(field)
+    field_arr = np.nan_to_num(field_arr, nan=0.0, posinf=1.0, neginf=0.0)
+    field_arr = np.clip(field_arr, 0.0, 1.0)
+
+    input_arr = input_map.detach().float().cpu()
+    if input_arr.ndim != 3:
+        raise ValueError(f"Expected input_map=[C,H,W], got shape={tuple(input_arr.shape)}.")
+    if input_arr.shape[0] < 1:
+        raise ValueError("input_map must contain at least the building channel.")
+
+    building = input_arr[0].numpy() > float(obstacle_threshold)
+    cars = np.zeros_like(building, dtype=bool)
+    if str(target_type).lower() == "carsdpm":
+        if input_arr.shape[0] < 2:
+            raise ValueError(
+                "target_type=carsdpm but input_map does not contain channel 1 for cars."
+            )
+        cars = input_arr[1].numpy() > float(obstacle_threshold)
+
+    if building.shape != field_arr.shape:
+        raise ValueError(
+            f"Geometry/radio-map shape mismatch: building={building.shape}, "
+            f"field={field_arr.shape}."
+        )
+
+    # Black-to-yellow radio field: [v, v, 0].
+    rgb = np.zeros((*field_arr.shape, 3), dtype=np.float32)
+    rgb[..., 0] = field_arr
+    rgb[..., 1] = field_arr
+
+    # Overlay geometry with categorical colors. Cars are written last so that
+    # a rare overlapping pixel remains visually identifiable as a dynamic obstacle.
+    rgb[building] = np.array([0.0, 0.0, 1.0], dtype=np.float32)  # blue
+    rgb[cars] = np.array([1.0, 0.0, 0.0], dtype=np.float32)      # red
+    return rgb
+
+
+def save_paper_rgb_map(
+    field,
+    input_map,
+    save_path,
+    target_type="DPM",
+    obstacle_threshold=0.5,
+):
+    """Save a borderless RGB PNG at the native map resolution."""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    rgb = build_paper_rgb_map(
+        field=field,
+        input_map=input_map,
+        target_type=target_type,
+        obstacle_threshold=obstacle_threshold,
+    )
+    # imsave writes the HxW RGB array directly, so a 256x256 map remains 256x256.
+    plt.imsave(save_path, rgb, vmin=0.0, vmax=1.0)
+
+
 def save_map_image(img, save_path, cmap="jet", vmin=None, vmax=None, title=None):
+    """Generic scalar-map saver retained for error-map visualization."""
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     arr = tensor_to_image(img)
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -298,55 +391,87 @@ def sync_if_cuda(device, gpu_ids):
             torch.cuda.synchronize(gpu_id)
 
 
-def calculate_radiomamba_metrics_for_pair(pred_tensor, target_tensor):
-    """Compute metrics in the same per-sample style as RadioMamba."""
-    pred_tensor = pred_tensor.float()
-    target_tensor = target_tensor.float()
+def compute_regression_metrics(pred, target, data_range=1.0, eps=1e-12):
+    """Compute radio-map regression and image-quality metrics.
 
-    if pred_tensor.ndim == 2:
-        pred_tensor = pred_tensor.unsqueeze(0).unsqueeze(0)
-    elif pred_tensor.ndim == 3:
-        pred_tensor = pred_tensor.unsqueeze(0)
+    Metrics:
+        MAE  = mean absolute error
+        MSE  = mean squared error
+        RMSE = sqrt(MSE)
+        NMSE = ||pred-target||_2^2 / ||target||_2^2
+        PSNR = 10 * log10(data_range^2 / MSE)
+        SSIM = structural similarity index
+    """
+    pred = pred.detach().float()
+    target = target.detach().float()
 
-    if target_tensor.ndim == 2:
-        target_tensor = target_tensor.unsqueeze(0).unsqueeze(0)
-    elif target_tensor.ndim == 3:
-        target_tensor = target_tensor.unsqueeze(0)
+    if pred.ndim == 2:
+        pred = pred[None, None, ...]
+    elif pred.ndim == 3:
+        pred = pred[None, ...]
 
-    if pred_tensor.shape[1] > 1:
-        pred_tensor = pred_tensor[:, :1]
-    if target_tensor.shape[1] > 1:
-        target_tensor = target_tensor[:, :1]
+    if target.ndim == 2:
+        target = target[None, None, ...]
+    elif target.ndim == 3:
+        target = target[None, ...]
 
-    mse = F.mse_loss(pred_tensor, target_tensor, reduction="mean").item()
-    rmse = math.sqrt(mse)
+    if pred.shape != target.shape:
+        raise ValueError(
+            f"Prediction and target shapes must match: "
+            f"{tuple(pred.shape)} vs {tuple(target.shape)}"
+        )
 
-    target_squared_mean = F.mse_loss(
-        target_tensor,
-        torch.zeros_like(target_tensor),
-        reduction="mean",
-    ).item()
-    if target_squared_mean < 1e-9:
-        nmse = 0.0 if mse < 1e-9 else float("inf")
+    error = pred - target
+
+    mae = error.abs().mean()
+    mse = error.square().mean()
+    rmse = torch.sqrt(mse)
+
+    target_energy = target.square().mean()
+    nmse = mse / torch.clamp(target_energy, min=eps)
+
+    if mse <= eps:
+        psnr = torch.tensor(
+            float("inf"),
+            device=pred.device,
+            dtype=pred.dtype,
+        )
     else:
-        nmse = mse / target_squared_mean
+        psnr = 10.0 * torch.log10(
+            torch.tensor(
+                data_range ** 2,
+                device=pred.device,
+                dtype=pred.dtype,
+            ) / mse
+        )
 
-    ssim = functional_ssim(pred_tensor, target_tensor, data_range=1.0).item()
-    psnr = functional_psnr(pred_tensor, target_tensor, data_range=1.0).item()
-    mae = F.l1_loss(pred_tensor, target_tensor, reduction="mean").item()
+    ssim = structural_similarity_index_measure(
+        pred,
+        target,
+        data_range=data_range,
+    )
 
     return {
-        "MAE": mae,
-        "MSE": mse,
-        "RMSE": rmse,
-        "NMSE": nmse,
-        "SSIM": ssim,
-        "PSNR": psnr,
+        "MAE": mae.item(),
+        "MSE": mse.item(),
+        "RMSE": rmse.item(),
+        "NMSE": nmse.item(),
+        "PSNR": psnr.item(),
+        "SSIM": ssim.item(),
     }
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
+def evaluate(
+    model,
+    loader,
+    device,
+    gpu_ids,
+    args,
+    save_folder,
+    use_amp=False,
+    target_type="DPM",
+):
     model.eval()
 
     pred_dir = os.path.join(save_folder, "pred_png")
@@ -392,7 +517,11 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
         total_infer_samples += batch_size
 
         for b in range(pred.size(0)):
-            sample_metrics = calculate_radiomamba_metrics_for_pair(pred[b], y[b])
+            sample_metrics = compute_regression_metrics(
+                pred[b],
+                y[b],
+                data_range=1.0,
+            )
             for k, v in sample_metrics.items():
                 metric_sums[k] += float(v)
             metric_count += 1
@@ -403,6 +532,7 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
             else:
                 name = f"{global_idx:06d}"
 
+            input_b = x[b].detach().cpu()
             pred_b = pred[b].detach().cpu()
             gt_b = y[b].detach().cpu()
             sample_mae = torch.mean(torch.abs(pred_b - gt_b)).item()
@@ -415,16 +545,22 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
 
             if should_save_png:
                 if args.save_pred:
-                    save_map_image(
-                        img=pred_b,
-                        save_path=os.path.join(pred_dir, f"{name}_mae_{sample_mae:.4f}.png"),
-                        cmap=args.cmap,
+                    save_paper_rgb_map(
+                        field=pred_b,
+                        input_map=input_b,
+                        save_path=os.path.join(
+                            pred_dir, f"{name}_mae_{sample_mae:.4f}.png"
+                        ),
+                        target_type=target_type,
+                        obstacle_threshold=args.obstacle_threshold,
                     )
                 if args.save_gt:
-                    save_map_image(
-                        img=gt_b,
+                    save_paper_rgb_map(
+                        field=gt_b,
+                        input_map=input_b,
                         save_path=os.path.join(gt_dir, f"{name}_gt.png"),
-                        cmap=args.cmap,
+                        target_type=target_type,
+                        obstacle_threshold=args.obstacle_threshold,
                     )
                 if args.save_error:
                     save_error_image(
@@ -454,7 +590,7 @@ def evaluate(model, loader, device, gpu_ids, args, save_folder, use_amp=False):
         "NMSE": avg_metrics.get("NMSE", float("nan")),
         "PSNR": avg_metrics.get("PSNR", float("nan")),
         "SSIM": avg_metrics.get("SSIM", float("nan")),
-        "metric_protocol": "radiomamba_per_sample_torchmetrics_float",
+        "metric_protocol": "per_sample_float_prediction",
         "total_forward_time_sec": float(total_forward_time_sec),
         "avg_inference_time_sec_per_sample": float(avg_inference_time_sec),
         "avg_inference_time_ms_per_sample": float(avg_inference_time_sec * 1000.0),
@@ -468,9 +604,9 @@ def main():
     cfg = prepare_eval_config(load_config(args.config_path), return_name=True)
     opts = resolve_options(args, cfg)
 
-    set_seed(opts["seed"])
     device, gpu_ids, use_amp = resolve_runtime(cfg)
     runtime_gpus = gpu_ids if gpu_ids else ["cpu"]
+    set_seed(opts["seed"])
 
     split_dict = get_split_dict(cfg)
     dataset, loader = select_split(split_dict, opts["split"])
@@ -497,6 +633,7 @@ def main():
         args=args,
         save_folder=save_folder,
         use_amp=use_amp,
+        target_type=opts["target_type"],
     )
 
     metrics_json_path = os.path.join(save_folder, "metrics.json")
@@ -506,7 +643,7 @@ def main():
     log_path = os.path.join(save_folder, "log.txt")
     with open(log_path, "a") as f:
         f.write("model: HRFormerRadioMapRegressor\n")
-        f.write("metric_protocol: RadioMamba per-sample torchmetrics, float prediction\n")
+        f.write("metric_protocol: per-sample evaluation on floating-point predictions\n")
         f.write(f"config_path: {args.config_path}\n")
         f.write(f"weight_path: {args.weight_path}\n")
         f.write(f"gpus: {runtime_gpus}\n")
@@ -514,6 +651,10 @@ def main():
         f.write(f"data_root: {opts['data_root']}\n")
         f.write(f"split: {opts['split']}\n")
         f.write(f"target_type: {opts['target_type']}\n")
+        f.write(
+            "png_style: black-to-yellow radio field + blue buildings + red cars\n"
+        )
+        f.write(f"obstacle_threshold: {args.obstacle_threshold}\n")
         f.write(f"num_tx: {opts['num_tx']}\n")
         f.write("\nModel Profile\n")
         f.write(f"total_params: {model_profile['total_params']:,}\n")

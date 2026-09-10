@@ -1,6 +1,6 @@
 {
   "seed": 42,
-  "runtime": {"gpus": [2], "amp": true},
+  "runtime": {"gpus": [1], "amp": true},
   "precompute_obstacle": {
     "splits": ["train", "val"],
     "batch_size": 1,
@@ -95,19 +95,19 @@
 
   "pretrain": {
     "epochs": 100,
-    "lr": 0.0001,
+    "lr": 0.0003,
     "weight_decay": 0.0005,
     "warmup_epochs": 5,
     "min_lr": 1e-06
   },
 
   "physics": {
-    "targets": ["radial_gain","obstacle_saturating_a007"],
+    "targets": ["obstacle_saturating_a007"],
     "tx_channel": -1,
     "building_threshold": 0.5,
     "obstacle_channels": [0,1],
     "ray_stride": 1,
-    "geo_precompute_root": "/home/ailab/Desktop/hwchoi/radiohrformer/data/precomputed_obstacle/",
+    "geo_precompute_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle/",
     "geo_mode_name": null
   },
   "visualize": {
@@ -120,7 +120,6 @@
     "save_individual": true,
     "save_inverted_obstacle_targets": true,
     "targets": [
-      "radial_gain",
       "obstacle_saturating_a007"
     ],
     "dpi": 180
