@@ -13,7 +13,7 @@ from tqdm import tqdm
 import torch
 from torch.amp import autocast, GradScaler
 
-from datasets.rms_dataset import build_dataloaders
+from datasets.rms_dataset import build_dataloaders, build_irt4_dataloaders, normalize_target_type
 from models.hrformer_regressor import HRFormerRadioMapRegressor, load_physics_pretrained_for_downstream
 
 from utils import (
@@ -42,6 +42,16 @@ def parse_args():
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--physics-pretrained", type=str, default=None)
+    parser.add_argument(
+        "--carsdpm-pretrained",
+        type=str,
+        default=None,
+        help=(
+            "Path to a fully trained carsDPM downstream checkpoint used to initialize "
+            "carsIRT4 fine-tuning. The complete model, including the regression head, "
+            "is loaded with strict=True; optimizer state is not restored."
+        ),
+    )
     parser.add_argument("--eval-split", choices=["val", "valid", "test"], default="val")
     parser.add_argument("--save-every", type=int, default=0)
     return parser.parse_args()
@@ -92,10 +102,11 @@ def prepare_train_config(cfg, return_name=False):
 
 
 def resolve_options(cfg):
+    target_type = normalize_target_type(cfg_get(cfg, ["data", "target_type"], "DPM"))
     return {
         "data_root": cfg_get(cfg, ["data", "root_dir"], None),
-        "target_type": cfg_get(cfg, ["data", "target_type"], "DPM"),
-        "input_mode": "cars" if cfg_get(cfg, ["data", "target_type"], "DPM") == "carsDPM" else "building",
+        "target_type": target_type,
+        "input_mode": "cars" if target_type in ["carsDPM", "carsIRT4"] else "building",
         "num_tx": cfg_get(cfg, ["data", "num_tx"], 80),
         "thresh": cfg_get(cfg, ["data", "thresh"], 0.0),
         "batch_size": cfg_get(cfg, ["data", "batch_size"], 32),
@@ -163,13 +174,24 @@ def normalize_state_dict_keys(state_dict):
 
 
 def get_split_dict(cfg):
-    """Requires the updated rms_dataset.build_dataloaders(cfg, return_datasets=True)."""
+    """Select the loader builder from data.target_type only."""
+    target_type = normalize_target_type(
+        cfg_get(cfg, ["data", "target_type"], "DPM")
+    )
+
+    if target_type in ["DPM", "carsDPM"]:
+        builder = build_dataloaders
+    elif target_type in ["IRT4", "carsIRT4"]:
+        builder = build_irt4_dataloaders
+    else:  # normalize_target_type already guards this path.
+        raise ValueError(f"Unsupported target_type: {target_type}")
+
     try:
-        return build_dataloaders(cfg, return_datasets=True)
+        return builder(cfg, return_datasets=True)
     except TypeError as exc:
         raise TypeError(
-            "rms_dataset.build_dataloaders must accept return_datasets=True. "
-            "Update rms_dataset.py with the provided version."
+            f"{builder.__name__} must accept return_datasets=True. "
+            "Update datasets/rms_dataset.py with the unified target_type version."
         ) from exc
 
 
@@ -412,11 +434,17 @@ def main():
 
     base_model = HRFormerRadioMapRegressor(cfg).to(device)
 
-    if args.resume is not None and args.physics_pretrained is not None:
+    # Exactly one initialization mode may be used.
+    init_args = {
+        "resume": args.resume,
+        "physics_pretrained": args.physics_pretrained,
+        "carsdpm_pretrained": args.carsdpm_pretrained,
+    }
+    active_init = [name for name, path in init_args.items() if path is not None]
+    if len(active_init) > 1:
         raise ValueError(
-            "Use either --resume or --physics-pretrained, not both. "
-            "--resume is for continuing a downstream run, while --physics-pretrained "
-            "is for initializing a new downstream fine-tuning run."
+            "Use only one of --resume, --physics-pretrained, or --carsdpm-pretrained. "
+            f"Received: {active_init}"
         )
 
     if args.physics_pretrained is not None:
@@ -427,6 +455,28 @@ def main():
             verbose=True,
         )
         print(f"Loaded physics-pretrained initialization: {args.physics_pretrained}")
+
+    if args.carsdpm_pretrained is not None:
+        if opts["target_type"] != "carsIRT4":
+            raise ValueError(
+                "--carsdpm-pretrained is intended for carsDPM -> carsIRT4 fine-tuning. "
+                "Set cfg['data']['target_type'] = 'carsIRT4'."
+            )
+        if args.eval_split == "test":
+            raise ValueError(
+                "Do not use --eval-split test during carsIRT4 fine-tuning. "
+                "Use val/valid for checkpoint selection and evaluate test only afterward."
+            )
+
+        # Load the complete carsDPM downstream predictor (backbone + decoder +
+        # regression head). Unlike --physics-pretrained, this is a full strict load.
+        # A fresh optimizer is created below, so the carsDPM optimizer state and LR
+        # schedule are intentionally not restored.
+        load_model_state(base_model, args.carsdpm_pretrained, device)
+        print(
+            "Loaded full carsDPM downstream initialization for carsIRT4 fine-tuning: "
+            f"{args.carsdpm_pretrained}"
+        )
 
     if args.resume is not None:
         load_model_state(base_model, args.resume, device)
@@ -462,7 +512,10 @@ def main():
         f.write(f"epochs: {opts['epochs']}\n")
         f.write(f"lr: {opts['lr']}\n")
         f.write(f"weight_decay: {opts['weight_decay']}\n")
-        f.write(f"loss: {opts['loss']}\n\n")
+        f.write(f"loss: {opts['loss']}\n")
+        f.write(f"resume: {args.resume}\n")
+        f.write(f"physics_pretrained: {args.physics_pretrained}\n")
+        f.write(f"carsdpm_pretrained: {args.carsdpm_pretrained}\n\n")
 
     for epoch in range(opts["epochs"]):
         lr = adjust_learning_rate(optimizer, epoch, opts)

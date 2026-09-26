@@ -18,8 +18,13 @@ import torch.nn.functional as F
 from torch.amp import autocast
 from torchmetrics.functional import structural_similarity_index_measure
 
-from datasets.rms_dataset import build_dataloaders
+from datasets.rms_dataset import build_dataloaders, build_irt4_dataloaders, normalize_target_type
 from models.hrformer_regressor import HRFormerRadioMapRegressor
+from metrics import (
+    get_obstacle_mask,
+    update_spatial_metrics,
+    summarize_spatial_metrics,
+)
 
 from utils import (
     set_seed,
@@ -55,6 +60,29 @@ def parse_args():
     )
     parser.add_argument("--error-vmax", type=float, default=0.3)
     parser.add_argument("--max-save", type=int, default=100)
+
+    # Spatial evaluation (Boundary / LoS / NLoS / Long-range NLoS).
+    # Values in cfg['spatial_eval'] are used by default; these two arguments are
+    # convenient run-time overrides for the precomputed geometry root and d0.
+    parser.add_argument(
+        "--spatial-geo-root",
+        type=str,
+        default=None,
+        help=(
+            "Root containing precomputed obstacle-transmittance .pt files. "
+            "Overrides cfg['spatial_eval']['geo_precompute_root']."
+        ),
+    )
+    parser.add_argument(
+        "--spatial-d0",
+        type=float,
+        default=None,
+        help=(
+            "Optional fixed Long-range NLoS distance threshold in pixels. "
+            "If omitted, d0 is derived once from the validation split using "
+            "the configured outdoor-distance quantile (default: 0.75)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -102,9 +130,10 @@ def prepare_eval_config(cfg, return_name=True):
 
 
 def resolve_options(args, cfg):
+    target_type = normalize_target_type(cfg_get(cfg, ["data", "target_type"], "DPM"))
     return {
         "data_root": cfg_get(cfg, ["data", "root_dir"], None),
-        "target_type": cfg_get(cfg, ["data", "target_type"], "DPM"),
+        "target_type": target_type,
         "split": "val" if args.split == "valid" else args.split,
         "num_tx": cfg_get(cfg, ["data", "num_tx"], 80),
         "thresh": cfg_get(cfg, ["data", "thresh"], 0.0),
@@ -112,6 +141,204 @@ def resolve_options(args, cfg):
         "num_workers": cfg_get(cfg, ["data", "num_workers"], 4),
         "seed": cfg_get(cfg, ["seed"], 42),
     }
+
+
+
+def to_environment_target_type(target_type):
+    """Map fidelity-specific targets to the geometry mode expected by metrics.py."""
+    target_type = normalize_target_type(target_type)
+    if target_type in ["carsDPM", "carsIRT4"]:
+        return "carsDPM"
+    return "DPM"
+
+
+def infer_spatial_geo_mode_name(target_type):
+    environment_type = to_environment_target_type(target_type)
+    if environment_type == "carsDPM":
+        return "cars_carsDPM"
+    return "building_DPM"
+
+
+def resolve_spatial_options(args, cfg, target_type):
+    """Resolve paper spatial-evaluation settings.
+
+    Recommended config block:
+        "spatial_eval": {
+          "geo_precompute_root": "./data/precomputed_obstacle",
+          "geo_mode_name": null,
+          "geo_key": "obstacle_saturating_a007",
+          "boundary_radius": 3,
+          "long_range_quantile": 0.75,
+          "d0": null
+        }
+
+    d0=None means: derive it from the validation split only, then keep it fixed
+    for the requested evaluation split.
+    """
+    spatial_cfg = cfg_get(cfg, ["spatial_eval"], {}) or {}
+
+    geo_root = (
+        args.spatial_geo_root
+        or spatial_cfg.get("geo_precompute_root")
+        or cfg_get(cfg, ["physics", "geo_precompute_root"], None)
+        or cfg_get(cfg, ["precompute_obstacle", "save_root"], None)
+        or "./data/precomputed_obstacle"
+    )
+    geo_mode_name = (
+        spatial_cfg.get("geo_mode_name")
+        or infer_spatial_geo_mode_name(target_type)
+    )
+    geo_key = str(spatial_cfg.get("geo_key", "obstacle_saturating_a007"))
+    boundary_radius = int(spatial_cfg.get("boundary_radius", 3))
+    long_range_quantile = float(spatial_cfg.get("long_range_quantile", 0.75))
+
+    configured_d0 = spatial_cfg.get("d0", None)
+    d0 = args.spatial_d0 if args.spatial_d0 is not None else configured_d0
+    if d0 is not None:
+        d0 = float(d0)
+
+    if boundary_radius < 0:
+        raise ValueError("spatial_eval.boundary_radius must be >= 0.")
+    if not (0.0 < long_range_quantile < 1.0):
+        raise ValueError("spatial_eval.long_range_quantile must be in (0, 1).")
+
+    return {
+        "geo_precompute_root": os.path.abspath(os.path.expanduser(str(geo_root))),
+        "geo_mode_name": str(geo_mode_name),
+        "geo_key": geo_key,
+        "boundary_radius": boundary_radius,
+        "long_range_quantile": long_range_quantile,
+        "d0": d0,
+    }
+
+
+def _safe_sample_stem(name):
+    stem = os.path.basename(str(name))
+    if stem.endswith(".png"):
+        stem = stem[:-4]
+    return stem.replace(os.sep, "_").replace(" ", "_")
+
+
+def load_precomputed_transmittance(
+    names,
+    device,
+    geo_precompute_root,
+    geo_mode_name,
+    split_name,
+    geo_key="obstacle_saturating_a007",
+):
+    """Load z_tr=exp(-alpha*A(p)) for the current batch.
+
+    Expected layout:
+        <root>/<mode>/<split>/<sample>.pt
+
+    The saved .pt must contain `geo_key`, e.g. obstacle_saturating_a007.
+    """
+    if names is None:
+        raise ValueError(
+            "Spatial metrics require sample names so precomputed geometry targets "
+            "can be loaded. prepare_eval_config(..., return_name=True) must be used."
+        )
+
+    split_name = "val" if split_name == "valid" else str(split_name)
+    tensors = []
+
+    for name in names:
+        stem = _safe_sample_stem(name)
+        path = os.path.join(
+            geo_precompute_root,
+            geo_mode_name,
+            split_name,
+            f"{stem}.pt",
+        )
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Missing precomputed spatial target: {path}\n"
+                "Precompute this evaluation split first (include 'test' when "
+                "evaluating the test set)."
+            )
+
+        data = torch.load(path, map_location="cpu")
+        if geo_key not in data:
+            raise KeyError(
+                f"'{geo_key}' was not found in {path}. "
+                f"Available keys: {list(data.keys())}"
+            )
+
+        z_tr = data[geo_key].float()
+        if z_tr.ndim == 2:
+            z_tr = z_tr.unsqueeze(0)
+        if z_tr.ndim != 3 or z_tr.shape[0] != 1:
+            raise ValueError(
+                f"Expected {geo_key} to have shape [1,H,W] or [H,W], "
+                f"got {tuple(z_tr.shape)} from {path}."
+            )
+        tensors.append(z_tr)
+
+    return torch.stack(tensors, dim=0).to(
+        device=device,
+        dtype=torch.float32,
+        non_blocking=True,
+    )
+
+
+@torch.no_grad()
+def estimate_long_range_d0_from_validation(
+    val_loader,
+    device,
+    target_type,
+    quantile=0.75,
+):
+    """Compute the exact pixel-distance quantile over validation outdoor pixels.
+
+    Distance squared is integer-valued on the pixel grid, so we accumulate a
+    histogram of squared Tx-to-pixel distances instead of storing all distances.
+    This gives an exact quantile with small, fixed memory usage.
+    """
+    hist = None
+    max_dist2 = None
+
+    for batch in tqdm(val_loader, desc="derive spatial d0 (val)", leave=False):
+        x = batch[0].to(device, non_blocking=True)
+        x = x.detach().float()
+
+        obstacle = get_obstacle_mask(x, to_environment_target_type(target_type))
+        outdoor = ~obstacle
+
+        batch_size, _, height, width = x.shape
+        current_max_dist2 = (height - 1) ** 2 + (width - 1) ** 2
+        if hist is None:
+            max_dist2 = current_max_dist2
+            hist = torch.zeros(max_dist2 + 1, dtype=torch.int64)
+        elif current_max_dist2 != max_dist2:
+            raise ValueError("All validation samples must share the same spatial size.")
+
+        tx_map = x[:, -1:, :, :]
+        flat_idx = tx_map.reshape(batch_size, -1).argmax(dim=1)
+        tx_y = (flat_idx // width).view(batch_size, 1, 1, 1).long()
+        tx_x = (flat_idx % width).view(batch_size, 1, 1, 1).long()
+
+        yy = torch.arange(height, device=device, dtype=torch.long).view(1, 1, height, 1)
+        xx = torch.arange(width, device=device, dtype=torch.long).view(1, 1, 1, width)
+        dist2 = (yy - tx_y).square() + (xx - tx_x).square()
+
+        valid_dist2 = dist2[outdoor].to(torch.int64)
+        if valid_dist2.numel() == 0:
+            continue
+
+        hist += torch.bincount(
+            valid_dist2.detach().cpu(),
+            minlength=max_dist2 + 1,
+        )
+
+    if hist is None or int(hist.sum().item()) == 0:
+        raise RuntimeError("No outdoor validation pixels were available to derive d0.")
+
+    total = int(hist.sum().item())
+    rank = max(1, int(math.ceil(float(quantile) * total)))
+    cumulative = torch.cumsum(hist, dim=0)
+    dist2_threshold = int(torch.searchsorted(cumulative, torch.tensor(rank)).item())
+    return math.sqrt(float(dist2_threshold))
 
 
 def resolve_runtime(cfg):
@@ -168,12 +395,24 @@ def normalize_state_dict_keys(state_dict):
 
 
 def get_split_dict(cfg):
+    """Select DPM/carsDPM or IRT4/carsIRT4 loaders from target_type only."""
+    target_type = normalize_target_type(
+        cfg_get(cfg, ["data", "target_type"], "DPM")
+    )
+
+    if target_type in ["DPM", "carsDPM"]:
+        builder = build_dataloaders
+    elif target_type in ["IRT4", "carsIRT4"]:
+        builder = build_irt4_dataloaders
+    else:
+        raise ValueError(f"Unsupported target_type: {target_type}")
+
     try:
-        return build_dataloaders(cfg, return_datasets=True)
+        return builder(cfg, return_datasets=True)
     except TypeError as exc:
         raise TypeError(
-            "rms_dataset.build_dataloaders must accept return_datasets=True. "
-            "Update rms_dataset.py with the provided version."
+            f"{builder.__name__} must accept return_datasets=True. "
+            "Update datasets/rms_dataset.py with the unified target_type version."
         ) from exc
 
 
@@ -260,10 +499,10 @@ def build_paper_rgb_map(
 
     building = input_arr[0].numpy() > float(obstacle_threshold)
     cars = np.zeros_like(building, dtype=bool)
-    if str(target_type).lower() == "carsdpm":
+    if normalize_target_type(target_type) in ["carsDPM", "carsIRT4"]:
         if input_arr.shape[0] < 2:
             raise ValueError(
-                "target_type=carsdpm but input_map does not contain channel 1 for cars."
+                "Car-aware target selected but input_map does not contain channel 1 for cars."
             )
         cars = input_arr[1].numpy() > float(obstacle_threshold)
 
@@ -471,8 +710,17 @@ def evaluate(
     save_folder,
     use_amp=False,
     target_type="DPM",
+    split_name="test",
+    spatial_options=None,
+    spatial_d0=None,
+    spatial_d0_source="validation_outdoor_distance_quantile",
 ):
     model.eval()
+
+    if spatial_options is None:
+        raise ValueError("spatial_options must be provided for spatial evaluation.")
+    if spatial_d0 is None:
+        raise ValueError("spatial_d0 must be resolved before evaluate().")
 
     pred_dir = os.path.join(save_folder, "pred_png")
     pred_npy_dir = os.path.join(save_folder, "pred_npy")
@@ -497,6 +745,7 @@ def evaluate(
     total_infer_samples = 0
     metric_sums = defaultdict(float)
     metric_count = 0
+    spatial_metric_store = defaultdict(list)
 
     reset_cuda_peak_memory(device, gpu_ids)
 
@@ -515,6 +764,27 @@ def evaluate(
         batch_size = x.size(0)
         total_forward_time_sec += elapsed
         total_infer_samples += batch_size
+
+        # Spatial-region metrics are intentionally computed outside the timed
+        # model-forward section so they do not contaminate inference latency.
+        z_tr = load_precomputed_transmittance(
+            names=names,
+            device=device,
+            geo_precompute_root=spatial_options["geo_precompute_root"],
+            geo_mode_name=spatial_options["geo_mode_name"],
+            split_name=split_name,
+            geo_key=spatial_options["geo_key"],
+        )
+        update_spatial_metrics(
+            metric_store=spatial_metric_store,
+            pred=pred.detach().float(),
+            target=y.detach().float(),
+            x=x.detach().float(),
+            target_type=to_environment_target_type(target_type),
+            d0=float(spatial_d0),
+            z_tr=z_tr,
+            boundary_radius=spatial_options["boundary_radius"],
+        )
 
         for b in range(pred.size(0)):
             sample_metrics = compute_regression_metrics(
@@ -576,6 +846,8 @@ def evaluate(
         k: float(v / max(1, metric_count))
         for k, v in metric_sums.items()
     }
+    spatial_summary = summarize_spatial_metrics(spatial_metric_store)
+
     avg_inference_time_sec = (
         total_forward_time_sec / total_infer_samples
         if total_infer_samples > 0
@@ -591,6 +863,17 @@ def evaluate(
         "PSNR": avg_metrics.get("PSNR", float("nan")),
         "SSIM": avg_metrics.get("SSIM", float("nan")),
         "metric_protocol": "per_sample_float_prediction",
+        "spatial_metric_protocol": "per_sample_masked_rmse_then_mean",
+        "spatial_metrics": spatial_summary,
+        "spatial_eval": {
+            "boundary_radius_px": int(spatial_options["boundary_radius"]),
+            "long_range_quantile": float(spatial_options["long_range_quantile"]),
+            "d0_px": float(spatial_d0),
+            "d0_source": str(spatial_d0_source),
+            "geo_precompute_root": spatial_options["geo_precompute_root"],
+            "geo_mode_name": spatial_options["geo_mode_name"],
+            "geo_key": spatial_options["geo_key"],
+        },
         "total_forward_time_sec": float(total_forward_time_sec),
         "avg_inference_time_sec_per_sample": float(avg_inference_time_sec),
         "avg_inference_time_ms_per_sample": float(avg_inference_time_sec * 1000.0),
@@ -611,9 +894,35 @@ def main():
     split_dict = get_split_dict(cfg)
     dataset, loader = select_split(split_dict, opts["split"])
 
+    spatial_options = resolve_spatial_options(args, cfg, opts["target_type"])
+    if spatial_options["d0"] is None:
+        spatial_d0 = estimate_long_range_d0_from_validation(
+            val_loader=split_dict["val_loader"],
+            device=device,
+            target_type=opts["target_type"],
+            quantile=spatial_options["long_range_quantile"],
+        )
+        spatial_d0_source = "validation_outdoor_distance_quantile"
+    else:
+        spatial_d0 = float(spatial_options["d0"])
+        spatial_d0_source = "configured_or_cli"
+
+    spatial_split_dir = os.path.join(
+        spatial_options["geo_precompute_root"],
+        spatial_options["geo_mode_name"],
+        opts["split"],
+    )
+    if not os.path.isdir(spatial_split_dir):
+        raise FileNotFoundError(
+            f"Spatial precompute directory not found: {spatial_split_dir}\n"
+            "Run tools/precompute_obstacle_targets.py with this split included."
+        )
+
     print(f"EVAL_SIZE : {len(dataset)}")
     print(f"Split     : {opts['split']}")
     print(f"Target    : {opts['target_type']}")
+    print(f"Spatial d0: {spatial_d0:.4f} px ({spatial_d0_source})")
+    print(f"Geo target: {spatial_options['geo_key']} @ {spatial_split_dir}")
 
     base_model = HRFormerRadioMapRegressor(cfg).to(device)
     load_model_state(base_model, args.weight_path, device)
@@ -634,6 +943,10 @@ def main():
         save_folder=save_folder,
         use_amp=use_amp,
         target_type=opts["target_type"],
+        split_name=opts["split"],
+        spatial_options=spatial_options,
+        spatial_d0=spatial_d0,
+        spatial_d0_source=spatial_d0_source,
     )
 
     metrics_json_path = os.path.join(save_folder, "metrics.json")
@@ -656,6 +969,14 @@ def main():
         )
         f.write(f"obstacle_threshold: {args.obstacle_threshold}\n")
         f.write(f"num_tx: {opts['num_tx']}\n")
+        f.write("\nSpatial Evaluation\n")
+        f.write(f"boundary_radius_px: {metrics['spatial_eval']['boundary_radius_px']}\n")
+        f.write(f"long_range_quantile: {metrics['spatial_eval']['long_range_quantile']:.4f}\n")
+        f.write(f"d0_px: {metrics['spatial_eval']['d0_px']:.6f}\n")
+        f.write(f"d0_source: {metrics['spatial_eval']['d0_source']}\n")
+        f.write(f"geo_mode_name: {metrics['spatial_eval']['geo_mode_name']}\n")
+        f.write(f"geo_key: {metrics['spatial_eval']['geo_key']}\n")
+        f.write(f"geo_precompute_root: {metrics['spatial_eval']['geo_precompute_root']}\n")
         f.write("\nModel Profile\n")
         f.write(f"total_params: {model_profile['total_params']:,}\n")
         f.write(f"trainable_params: {model_profile['trainable_params']:,}\n")
@@ -686,6 +1007,19 @@ def main():
         f.write(f"NMSE : {metrics['NMSE']:.6f}\n")
         f.write(f"PSNR : {metrics['PSNR']:.4f} dB\n")
         f.write(f"SSIM : {metrics['SSIM']:.6f}\n")
+        f.write("\nSpatial RMSE\n")
+        for display_name, key in [
+            ("Boundary", "boundary"),
+            ("LoS", "los"),
+            ("NLoS", "nlos"),
+            ("Long-range NLoS", "long_nlos"),
+        ]:
+            result = metrics["spatial_metrics"].get(key, {})
+            f.write(
+                f"{display_name} RMSE : {result.get('rmse', float('nan')):.6f} "
+                f"| std: {result.get('std', float('nan')):.6f} "
+                f"| n: {result.get('num_samples', 0)}\n"
+            )
 
     print("\nResults")
     print(f"MAE : {metrics['MAE']:.6f}")
@@ -694,6 +1028,20 @@ def main():
     print(f"NMSE : {metrics['NMSE']:.6f}")
     print(f"PSNR : {metrics['PSNR']:.4f} dB")
     print(f"SSIM : {metrics['SSIM']:.6f}")
+    print("\nSpatial RMSE")
+    for display_name, key in [
+        ("Boundary", "boundary"),
+        ("LoS", "los"),
+        ("NLoS", "nlos"),
+        ("Long-range NLoS", "long_nlos"),
+    ]:
+        result = metrics["spatial_metrics"].get(key, {})
+        print(
+            f"{display_name:<16}: {result.get('rmse', float('nan')):.6f} "
+            f"(std={result.get('std', float('nan')):.6f}, "
+            f"n={result.get('num_samples', 0)})"
+        )
+    print(f"d0: {metrics['spatial_eval']['d0_px']:.4f} px")
     print("\nModel Profile")
     print(f"Total params: {model_profile['total_params']:,}")
     print(f"Model size(param+buffer): {model_profile['model_size_mb']:.2f} MB")

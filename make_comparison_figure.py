@@ -31,16 +31,16 @@ BASELINE_DIRS_DPM = OrderedDict([
     ("RadioUNet", PROJECT_ROOT / "baselines" / "RadioUNet" / "runs" / "radiounet_dpm" / "pred" / "test" / "rgb"),
     ("RME-GAN", PROJECT_ROOT / "baselines" / "RME-GAN" / "runs" / "rmegan_dpm" / "pred" / "test" / "rgb"),
     ("RadioDiff", PROJECT_ROOT / "baselines" / "RadioDiff" / "runs" / "radiodiff_dpm" / "pred" / "test" / "rgb"),
+    ("RadioDiff-$k^2$", PROJECT_ROOT / "baselines" / "RadioDiff-k" / "runs" / "radiodiffk2_dpm" / "pred" / "test" / "rgb"),
     ("RadioMamba", PROJECT_ROOT / "baselines" / "RadioMamba" / "src" / "results" / "predictions_nocars_rgb"),
-    ("RadioDiff-k", PROJECT_ROOT / "baselines" / "RadioDiff-k" / "runs" / "radiodiffk2_dpm" / "pred" / "test" / "rgb"),
 ])
 
 BASELINE_DIRS_CARSDPM = OrderedDict([
     ("RadioUNet", PROJECT_ROOT / "baselines" / "RadioUNet" / "runs" / "radiounet_carsdpm" / "pred" / "test" / "rgb"),
     ("RME-GAN", PROJECT_ROOT / "baselines" / "RME-GAN" / "runs" / "rmegan_carsdpm" / "pred" / "test" / "rgb"),
     ("RadioDiff", PROJECT_ROOT / "baselines" / "RadioDiff" / "runs" / "radiodiff_carsdpm" / "pred" / "test" / "rgb"),
+    ("RadioDiff-$k^2$", PROJECT_ROOT / "baselines" / "RadioDiff-k" / "runs" / "radiodiffk2_carsdpm" / "pred" / "test" / "rgb"),
     ("RadioMamba", PROJECT_ROOT / "baselines" / "RadioMamba" / "src" / "results" / "predictions_withcars_rgb"),
-    ("RadioDiff-k", PROJECT_ROOT / "baselines" / "RadioDiff-k" / "runs" / "radiodiffk2_carsdpm" / "pred" / "test" / "rgb"),
 ])
 
 
@@ -397,16 +397,16 @@ if __name__ == "__main__":
         samples=SAMPLES,
         baseline_dirs=BASELINE_DIRS_DPM,
         ours_dir=OURS_DIRS["dpm"],
-        output_path=OUTPUT_DIR / "comparison_ours_dpm.pdf",
+        output_path=OUTPUT_DIR / "qualitative_dpm.pdf",
         target_type="DPM",
-        ours_label="Ours",
+        ours_label="RadioHRFormer",
     )
 
     make_comparison_pdf(
         samples=SAMPLES,
         baseline_dirs=BASELINE_DIRS_CARSDPM,
         ours_dir=OURS_DIRS["carsdpm"],
-        output_path=OUTPUT_DIR / "comparison_ours_carsdpm.pdf",
+        output_path=OUTPUT_DIR / "qualitative_carsdpm.pdf",
         target_type="carsDPM",
-        ours_label="Ours",
+        ours_label="RadioHRFormer",
     )

@@ -1,8 +1,9 @@
 {
   "seed": 42,
-  "runtime": {"gpus": [1], "amp": true},
+  "runtime": {"gpus": [0], "amp": true},
   "precompute_obstacle": {
-    "splits": ["train", "val"],
+    "save_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle",
+    "splits": ["train", "val", "test"],
     "batch_size": 1,
     "num_workers": 0,
     "dtype": "float16",
