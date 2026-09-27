@@ -1,7 +1,3 @@
-# visualization
-python tools/visualize_physics_targets.py --config-path ./configs/carsdpm_pretrain.json
-
-
 # precompute
 python tools/precompute_obstacle_targets.py \
   --config-path ./configs/dpm_pretrain.json
@@ -27,7 +23,7 @@ python train.py \
   --save-root ./save
 
 # evaluation
-python evaluate.py \
+python tools/evaluate.py \
     --config-path ./configs/carsdpm_downstream.json \
     --weight-path ./save/carsdpm/weight/best.pth \
     --split test \
@@ -36,7 +32,7 @@ python evaluate.py \
     --max-save 8000
 
 # carsirt4 zero-shot
-python evaluate.py \
+python tools/evaluate.py \
     --config-path ./configs/carsirt4_finetuning.json \
     --weight-path ./save/carsdpm/weight/best.pth \
     --split test \
@@ -51,7 +47,7 @@ python train.py \
   --save-root ./save \
   --run-name carsirt4_finetuning
 
-python evaluate.py \
+python tools/evaluate.py \
   --config-path ./configs/carsirt4_finetuning.json \
   --weight-path ./save/carsirt4_finetuning/weight/best.pth \
   --split test \
@@ -60,7 +56,7 @@ python evaluate.py \
 
 
 # runtime & flops
-python benchmark_radiohrformer_runtime.py \
+python tools/benchmark_runtime.py \
     --config-path ./configs/carsdpm_downstream.json \
     --weight-path ./save/dpm/weight/best.pth \
     --device cuda:0 \
@@ -73,7 +69,7 @@ python benchmark_radiohrformer_runtime.py \
     --output-dir ./runs/radiohrformer_resolution_runtime
 
 
-python benchmark_radiohrformer_flops.py \
+python tools/benchmark_flops.py \
     --config-path ./configs/carsdpm_downstream.json \
     --weight-path ./save/20260814_222709/weight/best.pth \
     --device cuda:0 \

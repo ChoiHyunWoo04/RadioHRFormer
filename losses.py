@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from pytorch_msssim import ms_ssim
 
 
-# l1_loss
 def MAE(y_pred, y_true):
     loss = torch.mean(torch.abs(torch.sub(y_true, y_pred)))
     return loss
