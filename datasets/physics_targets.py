@@ -25,14 +25,6 @@ class PhysicsTargetBuilder(nn.Module):
         Proposed path-wise obstruction-transmittance target:
             exp(-0.07 * A(p))
         where A(p) is accumulated obstacle length along the Tx-to-pixel ray.
-
-    Notes
-    -----
-    For ablation experiments, use ONE target per pretraining run.
-
-    "None" is intentionally not implemented as a target.
-    The no-pretraining baseline should skip Phase 1 and train the
-    downstream model from scratch for the matched 200-epoch budget.
     """
 
     VALID_TARGETS = {

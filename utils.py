@@ -4,7 +4,18 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
+from pathlib import Path
 
+
+def get_default_run_name(config_path):
+    """Derive a stable experiment name from the config filename."""
+    stem = Path(config_path).stem
+
+    for suffix in ("_pretrain", "_downstream"):
+        if stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+
+    return stem
 
 # Seed-fixing utility
 def set_seed(seed=42):

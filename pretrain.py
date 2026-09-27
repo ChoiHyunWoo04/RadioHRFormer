@@ -6,7 +6,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import argparse
 import json
 import math
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -21,6 +20,7 @@ from utils import (
     set_seed,
     get_amp_device_type,
     summarize_trainable_by_module,
+    get_default_run_name
 )
 
 
@@ -316,7 +316,7 @@ def main():
     val_key = "val" if args.eval_split == "valid" else args.eval_split
     val_loader = split_dict[f"{val_key}_loader"]
 
-    run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = args.run_name or get_default_run_name(args.config_path)
     save_folder = os.path.join(args.save_root, run_name)
     weight_dir = os.path.join(save_folder, "weight")
     os.makedirs(weight_dir, exist_ok=True)
@@ -341,12 +341,15 @@ def main():
     )
     scaler = GradScaler(device.type, enabled=use_amp)
 
-    with open(log_path, "a") as f:
+    with open(log_path, "w") as f:
         f.write("model: HRFormerPhysicsPretrainer\n")
         f.write(json.dumps(opts, indent=2, default=str) + "\n")
         f.write(f"raw_target_names: {raw_target_names}\n")
         f.write(f"target_names: {target_names}\n")
         f.write(f"head_specs: {head_specs}\n\n")
+
+    with open(os.path.join(save_folder, "config.json"), "w") as f:
+        json.dump(cfg, f, indent=2)
 
     train_losses, val_losses = [], []
     best_loss = float("inf")

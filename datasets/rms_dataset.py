@@ -29,16 +29,12 @@ class RadioMapSeerDataset(Dataset):
     RadioMapSeer dataset for HRFormer-based radio map regression.
 
     Input x: [3, H, W]
-        cars_input=False: [building, building, Tx-Gaussian]
-        cars_input=True : [building, cars, Tx-Gaussian]
+        cars_input=False: [building, building, Tx]
+        cars_input=True : [building, cars, Tx]
 
     Target y: [1, H, W]
         target_type='DPM'     : no-car DPM radio map
         target_type='carsDPM' : car-aware DPM radio map
-
-    Augmentation:
-        If augment=True, the same random resized crop and flips are applied
-        to both x and y to preserve spatial alignment.
     """
 
     def __init__(

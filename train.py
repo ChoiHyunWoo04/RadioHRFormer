@@ -6,7 +6,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 import json
 import math
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -20,6 +19,7 @@ from utils import (
     set_seed,
     get_amp_device_type,
     summarize_trainable_by_module,
+    get_default_run_name
 )
 from losses import (
     MAE,
@@ -421,7 +421,7 @@ def main():
     train_dataset = split_dict["train_dataset"]
     val_loader, val_dataset = get_eval_loader(split_dict, args.eval_split)
 
-    run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = args.run_name or get_default_run_name(args.config_path)
     save_folder = os.path.join(args.save_root, run_name)
     weight_dir = os.path.join(save_folder, "weight")
     os.makedirs(weight_dir, exist_ok=True)
@@ -499,7 +499,7 @@ def main():
     best_rmse = float("inf")
     last_metrics = None
 
-    with open(log_path, "a") as f:
+    with open(log_path, "w") as f:
         f.write("model: HRFormerRadioMapRegressor\n")
         f.write(f"config_path: {args.config_path}\n")
         f.write(f"gpus: {opts['gpus']}\n")
@@ -516,6 +516,9 @@ def main():
         f.write(f"resume: {args.resume}\n")
         f.write(f"physics_pretrained: {args.physics_pretrained}\n")
         f.write(f"carsdpm_pretrained: {args.carsdpm_pretrained}\n\n")
+
+    with open(os.path.join(save_folder, "config.json"), "w") as f:
+        json.dump(cfg, f, indent=2)
 
     for epoch in range(opts["epochs"]):
         lr = adjust_learning_rate(optimizer, epoch, opts)
@@ -605,7 +608,7 @@ def main():
     save_loss_curve(train_losses, val_losses, os.path.join(save_folder, "loss.png"))
 
     print("\nFinished training")
-    print(f"Best MAE checkpoint: {os.path.join(weight_dir, 'best.pth')}")
+    print(f"Best RMSE checkpoint: {os.path.join(weight_dir, 'best.pth')}")
     print(f"Last checkpoint    : {os.path.join(weight_dir, 'last.pth')}")
     print(f"Log                : {log_path}")
 

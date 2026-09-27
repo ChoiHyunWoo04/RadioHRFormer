@@ -2,7 +2,7 @@
   "seed": 42,
   "runtime": {"gpus": [0], "amp": true},
   "precompute_obstacle": {
-    "save_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle",
+    "save_root": "./data/precomputed_obstacle",
     "splits": ["train", "val", "test"],
     "batch_size": 1,
     "num_workers": 0,
@@ -10,7 +10,7 @@
     "overwrite": false
   },
   "data": {
-    "root_dir": "/home/ailab/Desktop/data/radiomapseer/",
+    "root_dir": "./data/radiomapseer/",
     "image_size": 256,
     "num_tx": 80,
     "target_type": "DPM",
@@ -108,7 +108,7 @@
     "building_threshold": 0.5,
     "obstacle_channels": [0,1],
     "ray_stride": 1,
-    "geo_precompute_root": "/home/ailab/Desktop/hwchoi/RadioHRFormer/data/precomputed_obstacle/",
+    "geo_precompute_root": "./data/precomputed_obstacle/",
     "geo_mode_name": null
   },
   "visualize": {

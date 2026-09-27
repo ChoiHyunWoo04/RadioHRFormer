@@ -1,8 +1,8 @@
 {
   "seed": 42,
-  "runtime": {"gpus": [1], "amp": true},
+  "runtime": {"gpus": [0], "amp": true},
   "data": {
-    "root_dir": "/home/ailab/Desktop/data/radiomapseer/",
+    "root_dir": "./data/radiomapseer/",
     "image_size": 256,
     "num_tx": 80,
     "target_type": "carsDPM",

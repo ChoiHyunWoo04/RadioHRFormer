@@ -1,3 +1,7 @@
+# visualization
+python tools/visualize_physics_targets.py --config-path ./configs/carsdpm_pretrain.json
+
+
 # precompute
 python tools/precompute_obstacle_targets.py \
   --config-path ./configs/dpm_pretrain.json

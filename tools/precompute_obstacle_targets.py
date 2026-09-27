@@ -13,9 +13,6 @@ from utils import set_seed, prepare_device
 
 # Every saved .pt contains only:
 #   obstacle_saturating_a007
-#
-# All settings are read from the shared JSON config.
-# Required CLI argument: --config-path ./configs/hrt.json
 
 
 def parse_args():
@@ -30,8 +27,7 @@ def parse_args():
     parser.add_argument(
         "--config-path",
         type=str,
-        default="./configs/hrt.json",
-        help="Shared HRFormer JSON config.",
+        default=None,
     )
     return parser.parse_args()
 
@@ -212,7 +208,7 @@ def alpha_to_key(alpha: float) -> str:
     return f"obstacle_saturating_a{int(round(alpha * 100)):03d}"
 
 
-#OBSTACLE_ALPHAS = (0.05, 0.06, 0.07, 0.08 0.09)
+#OBSTACLE_ALPHAS = (0.05, 0.06, 0.07, 0.08, 0.09)
 OBSTACLE_ALPHAS = (0.07,)
 
 
@@ -223,13 +219,10 @@ def compute_obstacle_targets(
     obstacle_channels=(0, 1),
     building_threshold=0.5,
 ):
-    """Compute the only two retained ray-obstruction maps for one sample.
+    """Compute the only one retained ray-obstruction maps for one sample.
 
-    obstacle_sum:
-        Per-sample min-max-normalized obstruction length.
-
-    obstacle_saturating_a005:
-        1 - exp(-0.05 * obstruction length), already in [0, 1].
+    obstacle_saturating_a007:
+        1 - exp(-0.07 * obstruction length), already in [0, 1].
     """
     x_i = x_i.float()
     obstacle_mask = build_obstacle_map(
@@ -278,9 +271,6 @@ def compute_obstacle_targets(
                 # precomputed inverted saturating / transmission prior
                 target_map[0, y1, x1] = torch.exp(-float(alpha) * hit_length)
 
-    #targets = {
-    #    "obstacle_sum": minmax(obstacle_sum_raw).cpu(),
-    #}
     targets = {}
 
     for alpha, target_map in obstacle_transmission_maps.items():
@@ -314,9 +304,6 @@ def unpack_batch(batch):
 
 
 def save_manifest(save_base, cfg, options):
-    #target_keys = ["obstacle_sum"] + [
-    #    alpha_to_key(alpha) for alpha in OBSTACLE_ALPHAS
-    #]
     target_keys = [
         alpha_to_key(alpha) for alpha in OBSTACLE_ALPHAS
     ]
