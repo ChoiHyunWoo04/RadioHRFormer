@@ -140,7 +140,7 @@ class MultiHeadPhysicsDecoder(nn.Module):
     """Pretraining decoder: one shared body and lightweight target-specific heads.
 
     Args:
-        head_specs: dict such as {"grad": 1, "lap": 1, "k2": 1, "kneg": 1}
+        head_specs: dict such as {"obstacle_saturating_a007": 1}
     Returns:
         dict[name, Tensor[B, C_name, H, W]]
     """

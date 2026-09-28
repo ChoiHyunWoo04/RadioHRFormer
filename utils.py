@@ -2,7 +2,6 @@ import os
 import torch
 import random
 import numpy as np
-import matplotlib.pyplot as plt
 from collections import defaultdict
 from pathlib import Path
 
@@ -25,34 +24,6 @@ def set_seed(seed=42):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-class FormattingString:
-    @staticmethod
-    def show(values):
-        raise NotImplementedError("The formatting string used is not implemented.")
-  
-       
-class DefaultFormattingString(FormattingString):
-    @staticmethod
-    def show(values):
-        gb_formatting = lambda value : value / 1024**3
-        return f"""Memory Amount Used
- - Alloccated Memory: {gb_formatting(values[0]):.2f} GB
- - Reserved Memory: {gb_formatting(values[1]):.2f} GB"""
-
-
-def show_current_cuda_memory(formatting_string=DefaultFormattingString):
-    """
-    Check current CUDA memory usage.
-    """
-    cuda = torch.cuda
-    formatting = lambda value : value / 1024**3
-    allocated_memory = cuda.memory_allocated()
-    reserved_memory = cuda.memory_reserved()
-    print(formatting_string.show((allocated_memory, reserved_memory)))
-#     print(f"Allocated memory: {formatting(allocated_memory):.2f} GB")
-#     print(f"Reserved memory: {formatting(reserved_memory):.2f} GB")
 
 
 def is_cuda_device(device) -> bool:
@@ -94,10 +65,6 @@ def prepare_device(cuda_visible_devices="0"):
 
 def get_amp_device_type(device) -> str:
     return "cuda" if is_cuda_device(device) else "cpu"
-
-
-def use_amp_on_device(device, amp_enabled=True) -> bool:
-    return bool(amp_enabled and is_cuda_device(device))
 
 
 def summarize_trainable_by_module(model):

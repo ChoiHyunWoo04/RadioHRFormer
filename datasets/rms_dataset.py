@@ -1,8 +1,6 @@
 import os
 import numpy as np
 import torch
-import torchvision.transforms.functional as TF
-from torchvision.transforms import InterpolationMode
 from torch.utils.data import Dataset, DataLoader
 from skimage import io
 
@@ -29,8 +27,8 @@ class RadioMapSeerDataset(Dataset):
     RadioMapSeer dataset for HRFormer-based radio map regression.
 
     Input x: [3, H, W]
-        cars_input=False: [building, building, Tx]
-        cars_input=True : [building, cars, Tx]
+    target_type='DPM'     : [building, building, Tx]
+    target_type='carsDPM' : [building, cars, Tx]
 
     Target y: [1, H, W]
         target_type='DPM'     : no-car DPM radio map
@@ -85,9 +83,6 @@ class RadioMapSeerDataset(Dataset):
         self.dir_tx = os.path.join(root_dir, "png", "antennas")
         self.dir_gain = os.path.join(root_dir, "gain", target_type)
         self.dir_cars = os.path.join(root_dir, "png", "cars") if target_type == "carsDPM" else None
-
-        self.height = 256
-        self.width = 256
 
     def __len__(self):
         return (self.ind2 - self.ind1 + 1) * self.num_tx
@@ -297,9 +292,6 @@ class RadioMapSeerIRT4Dataset(Dataset):
             if self.target_type == "carsIRT4"
             else None
         )
-
-        self.height = 256
-        self.width = 256
 
     def __len__(self):
         return (self.ind2 - self.ind1 + 1) * self.num_tx

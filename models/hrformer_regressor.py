@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from models.hrformer.hrt import HRT
 from models.decoder import RegressionDecoder, HRFormerSkipDecoder, MultiHeadPhysicsDecoder
@@ -92,6 +91,9 @@ class HRFormerRadioMapRegressor(nn.Module):
         elif cfg["model"]["decoder"]["type"] == "HRFormerSkipDecoder":
             self.decoder = HRFormerSkipDecoder(
                 backbone_channels=cfg["model"]["decoder"]["in_channels"],
+                stem2_channels=cfg["model"]["decoder"]["stem2_channels"],
+                stem1_channels=cfg["model"]["decoder"]["stem1_channels"],
+                hidden_channels=cfg["model"]["decoder"]["hidden_channels"],
                 out_channels=cfg["model"]["decoder"]["out_channels"],
             )
         

@@ -14,7 +14,6 @@ from torch.amp import autocast, GradScaler
 
 from datasets.rms_dataset import build_dataloaders
 from datasets.physics_targets import PhysicsTargetBuilder, PhysicsPretrainLoss
-from losses import JointLoss
 from models.hrformer_regressor import HRFormerPhysicsPretrainer
 from utils import (
     set_seed,
@@ -33,12 +32,6 @@ def parse_args():
     p.add_argument("--eval-split", choices=["val", "valid", "test"], default="val")
     p.add_argument("--save-every", type=int, default=0)
     return p.parse_args()
-
-
-def parse_int_list(value):
-    if isinstance(value, (list, tuple)):
-        return tuple(int(v) for v in value)
-    return tuple(int(v.strip()) for v in str(value).split(",") if v.strip())
 
 
 def load_config(path):

@@ -20,8 +20,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Precompute RadioMapSeer obstacle_sum and "
-            "obstacle_saturating_a005 using the shared JSON config."
+            "Precompute RadioMapSeer obstacle_saturating_a007"
         )
     )
     parser.add_argument(
@@ -198,12 +197,6 @@ def tx_center(tx_map):
     return int(flat_index // width), int(flat_index % width)
 
 
-def minmax(z, eps=1e-8):
-    z_min = z.amin()
-    z_max = z.amax()
-    return (z - z_min) / (z_max - z_min + eps)
-
-
 def alpha_to_key(alpha: float) -> str:
     return f"obstacle_saturating_a{int(round(alpha * 100)):03d}"
 
@@ -222,7 +215,7 @@ def compute_obstacle_targets(
     """Compute the only one retained ray-obstruction maps for one sample.
 
     obstacle_saturating_a007:
-        1 - exp(-0.07 * obstruction length), already in [0, 1].
+        exp(-0.07 * obstruction length), already in [0, 1].
     """
     x_i = x_i.float()
     obstacle_mask = build_obstacle_map(

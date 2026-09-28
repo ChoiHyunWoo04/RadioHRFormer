@@ -8,10 +8,6 @@ def MAE(y_pred, y_true):
     loss = torch.mean(torch.abs(torch.sub(y_true, y_pred)))
     return loss
 
-def MSE(y_pred, y_true):
-    loss = torch.mean(((y_pred - y_true) ** 2))
-    return loss
-
 
 class JointLoss(nn.Module):
     def __init__(
@@ -29,8 +25,6 @@ class JointLoss(nn.Module):
         self.grad_weight = grad_weight
         self.ssim_weight = ssim_weight
         self.data_range = data_range
-
-        self.l1 = nn.L1Loss()
 
         sobel_x = torch.tensor(
             [[1, 0, -1],

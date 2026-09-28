@@ -482,10 +482,6 @@ def build_paper_rgb_map(
 
     The model output is *not* per-image min-max normalized. Values are only clipped
     to [0,1], preserving the common RadioMapSeer gray-level scale across samples.
-
-    Expected input channel order in this project:
-      cars_input=False: [building, building, Tx]
-      cars_input=True : [building, cars, Tx]
     """
     field_arr = _single_channel_numpy(field)
     field_arr = np.nan_to_num(field_arr, nan=0.0, posinf=1.0, neginf=0.0)
