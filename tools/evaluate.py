@@ -16,11 +16,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.amp import autocast
-from torchmetrics.functional import structural_similarity_index_measure
 
 from datasets.rms_dataset import build_dataloaders, build_irt4_dataloaders, normalize_target_type
 from models.hrformer_regressor import HRFormerRadioMapRegressor
 from metrics import (
+    compute_ssim,
     get_obstacle_mask,
     update_spatial_metrics,
     summarize_spatial_metrics,
@@ -37,7 +37,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Evaluate HRFormer for RadioMapSeer radio map regression."
     )
-    parser.add_argument("--config-path", type=str, default="./configs/hrt.json")
+    parser.add_argument("--config-path", type=str, required=True, help="Path to the experiment JSON configuration.")
     parser.add_argument("--weight-path", type=str, required=True)
     parser.add_argument("--save-root", type=str, default="./save_eval")
     parser.add_argument("--run-name", type=str, default=None)
@@ -680,7 +680,7 @@ def compute_regression_metrics(pred, target, data_range=1.0, eps=1e-12):
             ) / mse
         )
 
-    ssim = structural_similarity_index_measure(
+    ssim = compute_ssim(
         pred,
         target,
         data_range=data_range,
@@ -692,7 +692,7 @@ def compute_regression_metrics(pred, target, data_range=1.0, eps=1e-12):
         "RMSE": rmse.item(),
         "NMSE": nmse.item(),
         "PSNR": psnr.item(),
-        "SSIM": ssim.item(),
+        "SSIM": float(ssim),
     }
 
 

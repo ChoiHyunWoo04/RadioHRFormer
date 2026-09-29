@@ -37,10 +37,9 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Train HRFormer for RadioMapSeer radio map regression."
     )
-    parser.add_argument("--config-path", type=str, default="./configs/hrt.json")
+    parser.add_argument("--config-path", type=str, required=True, help="Path to the experiment JSON configuration.")
     parser.add_argument("--save-root", type=str, default="./save")
     parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--physics-pretrained", type=str, default=None)
     parser.add_argument(
         "--carsdpm-pretrained",
@@ -53,7 +52,6 @@ def parse_args():
         ),
     )
     parser.add_argument("--eval-split", choices=["val", "valid", "test"], default="val")
-    parser.add_argument("--save-every", type=int, default=0)
     return parser.parse_args()
 
 
@@ -246,10 +244,13 @@ def adjust_learning_rate(optimizer, epoch, opts):
 
 def train_one_epoch(model, loader, loss_fn, optimizer, device, scaler, use_amp, epoch=None):
     model.train()
+
     total_loss = 0.0
     total_seen = 0
-    pred_all = []
-    gt_all = []
+
+    # Streaming MAE
+    total_abs_error = 0.0
+    total_elements = 0
 
     desc = "Train" if epoch is None else f"Train Epoch {epoch}"
     pbar = tqdm(loader, desc=desc, leave=False)
@@ -275,18 +276,21 @@ def train_one_epoch(model, loader, loss_fn, optimizer, device, scaler, use_amp, 
         total_loss += loss.item() * bs
         total_seen += bs
 
-        pred_all.append(pred.detach().cpu())
-        gt_all.append(y.detach().cpu())
+        # Accumulate MAE without storing all predictions.
+        # Use FP32 for the reported metric even when AMP is enabled.
+        with torch.no_grad():
+            abs_error = torch.abs(
+                pred.detach().float() - y.detach().float()
+            )
+            total_abs_error += abs_error.sum().item()
+            total_elements += abs_error.numel()
 
         pbar.set_postfix({
             "loss": f"{total_loss / total_seen:.5f}",
         })
 
-    pred_all = torch.cat(pred_all, dim=0).float()
-    gt_all = torch.cat(gt_all, dim=0).float()
-
     avg_loss = total_loss / total_seen
-    avg_mae = float(MAE(gt_all, pred_all))
+    avg_mae = total_abs_error / total_elements
 
     return avg_loss, avg_mae
 
@@ -381,16 +385,10 @@ def save_loss_curve(train_losses, val_losses, save_path):
     plt.close()
 
 
-def save_checkpoint(model, optimizer, epoch, metrics, opts, save_path):
+def save_checkpoint(model, save_path):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(
-        {
-            "epoch": epoch,
-            "model": unwrap_model(model).state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "metrics": metrics,
-            "options": opts,
-        },
+        unwrap_model(model).state_dict(),
         save_path,
     )
 
@@ -436,14 +434,13 @@ def main():
 
     # Exactly one initialization mode may be used.
     init_args = {
-        "resume": args.resume,
         "physics_pretrained": args.physics_pretrained,
         "carsdpm_pretrained": args.carsdpm_pretrained,
     }
     active_init = [name for name, path in init_args.items() if path is not None]
     if len(active_init) > 1:
         raise ValueError(
-            "Use only one of --resume, --physics-pretrained, or --carsdpm-pretrained. "
+            "Use only one of --physics-pretrained, or --carsdpm-pretrained. "
             f"Received: {active_init}"
         )
 
@@ -478,10 +475,6 @@ def main():
             f"{args.carsdpm_pretrained}"
         )
 
-    if args.resume is not None:
-        load_model_state(base_model, args.resume, device)
-        print(f"Loaded checkpoint: {args.resume}")
-
     summarize_trainable_by_module(base_model)
     model = maybe_wrap_data_parallel(base_model, gpu_ids)
 
@@ -513,7 +506,6 @@ def main():
         f.write(f"lr: {opts['lr']}\n")
         f.write(f"weight_decay: {opts['weight_decay']}\n")
         f.write(f"loss: {opts['loss']}\n")
-        f.write(f"resume: {args.resume}\n")
         f.write(f"physics_pretrained: {args.physics_pretrained}\n")
         f.write(f"carsdpm_pretrained: {args.carsdpm_pretrained}\n\n")
 
@@ -580,29 +572,11 @@ def main():
             best_rmse = val_metrics["RMSE"]
             save_checkpoint(
                 model,
-                optimizer,
-                epoch + 1,
-                val_metrics,
-                opts,
                 os.path.join(weight_dir, "best.pth"),
-            )
-
-        if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
-            save_checkpoint(
-                model,
-                optimizer,
-                epoch + 1,
-                val_metrics,
-                opts,
-                os.path.join(weight_dir, f"epoch_{epoch + 1:03d}.pth"),
             )
 
     save_checkpoint(
         model,
-        optimizer,
-        opts["epochs"],
-        last_metrics,
-        opts,
         os.path.join(weight_dir, "last.pth"),
     )
     save_loss_curve(train_losses, val_losses, os.path.join(save_folder, "loss.png"))

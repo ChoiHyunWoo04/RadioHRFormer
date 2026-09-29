@@ -53,7 +53,7 @@ RadioHRFormer/
 Clone the repository and create a Python environment.
 
 ```bash
-git clone https://github.com/<YOUR-ACCOUNT>/RadioHRFormer.git
+git clone https://github.com/ChoiHyunWoo04/RadioHRFormer.git
 cd RadioHRFormer
 ```
 
@@ -63,7 +63,7 @@ Install a PyTorch build compatible with your CUDA environment first, then instal
 pip install -r requirements.txt
 ```
 
-The experiments in this repository were developed with PyTorch 2.4.1 and CUDA 11.8. If a different CUDA version is used, install the corresponding PyTorch build before installing the remaining packages.
+The experiments in this repository were developed with **Python 3.11.15**, **PyTorch 2.4.1**, and **CUDA 11.8**. If a different CUDA version is used, install the corresponding PyTorch build before installing the remaining packages.
 
 ## Dataset
 

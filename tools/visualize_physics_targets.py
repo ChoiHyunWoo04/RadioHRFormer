@@ -29,7 +29,7 @@ def parse_args():
             "three propagation-aware pretraining targets."
         )
     )
-    parser.add_argument("--config-path", type=str, default="./configs/hrt.json")
+    parser.add_argument("--config-path", type=str, required=True)
     parser.add_argument(
         "--save-dir",
         type=str,

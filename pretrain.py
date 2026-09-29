@@ -25,12 +25,10 @@ from utils import (
 
 def parse_args():
     p = argparse.ArgumentParser(description="Physics-map pretraining for HRFormer on RadioMapSeer.")
-    p.add_argument("--config-path", type=str, default="./configs/hrt.json")
+    p.add_argument("--config-path", type=str, required=True, help="Path to the experiment JSON configuration.")
     p.add_argument("--save-root", type=str, default="./save_pretrain")
     p.add_argument("--run-name", type=str, default=None)
-    p.add_argument("--resume", type=str, default=None)
     p.add_argument("--eval-split", choices=["val", "valid", "test"], default="val")
-    p.add_argument("--save-every", type=int, default=0)
     return p.parse_args()
 
 
@@ -122,26 +120,6 @@ def unwrap_model(model):
     return model.module if isinstance(model, torch.nn.DataParallel) else model
 
 
-def normalize_state_dict_keys(state_dict):
-    if any(key.startswith("module.") for key in state_dict):
-        return {
-            key[7:] if key.startswith("module.") else key: value
-            for key, value in state_dict.items()
-        }
-    return state_dict
-
-
-def load_model_state(model, ckpt_path, device):
-    ckpt = torch.load(ckpt_path, map_location=device)
-    if isinstance(ckpt, dict) and "model" in ckpt:
-        state_dict = ckpt["model"]
-    elif isinstance(ckpt, dict) and "state_dict" in ckpt:
-        state_dict = ckpt["state_dict"]
-    else:
-        state_dict = ckpt
-    unwrap_model(model).load_state_dict(normalize_state_dict_keys(state_dict), strict=True)
-
-
 def adjust_learning_rate(optimizer, epoch, opts):
     base_lr, min_lr = opts["lr"], opts["min_lr"]
     warmup, total = opts["warmup_epochs"], opts["epochs"]
@@ -223,16 +201,10 @@ def evaluate_one_epoch(model, loader, target_builder, loss_fn, device, use_amp, 
     return {k: v / total_seen for k, v in sum_logs.items()}
 
 
-def save_checkpoint(model, optimizer, epoch, metrics, opts, save_path):
+def save_checkpoint(model, save_path):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(
-        {
-            "epoch": epoch,
-            "model": unwrap_model(model).state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "metrics": metrics,
-            "options": opts,
-        },
+        unwrap_model(model).state_dict(),
         save_path,
     )
 
@@ -316,9 +288,6 @@ def main():
     log_path = os.path.join(save_folder, "log.txt")
 
     base_model = HRFormerPhysicsPretrainer(cfg, head_specs=head_specs).to(device)
-    if args.resume is not None:
-        load_model_state(base_model, args.resume, device)
-        print(f"Loaded checkpoint: {args.resume}")
     summarize_trainable_by_module(base_model)
     model = maybe_wrap_data_parallel(base_model, gpu_ids)
 
@@ -384,28 +353,11 @@ def main():
             best_loss = val_logs["loss"]
             save_checkpoint(
                 model,
-                optimizer,
-                epoch + 1,
-                val_logs,
-                opts,
                 os.path.join(weight_dir, "best.pth"),
-            )
-        if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
-            save_checkpoint(
-                model,
-                optimizer,
-                epoch + 1,
-                val_logs,
-                opts,
-                os.path.join(weight_dir, f"epoch_{epoch + 1:03d}.pth"),
             )
 
     save_checkpoint(
         model,
-        optimizer,
-        opts["epochs"],
-        last_metrics,
-        opts,
         os.path.join(weight_dir, "last.pth"),
     )
     save_loss_curve(train_losses, val_losses, os.path.join(save_folder, "loss.png"))
