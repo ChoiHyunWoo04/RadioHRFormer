@@ -55,9 +55,22 @@ Clone the repository and create a Python environment.
 ```bash
 git clone https://github.com/ChoiHyunWoo04/RadioHRFormer.git
 cd RadioHRFormer
+
+conda create -n radiohrformer python=3.11.15 -y
+conda activate radiohrformer
 ```
 
-Install a PyTorch build compatible with your CUDA environment first, then install the remaining dependencies.
+Install PyTorch 2.4.1 with CUDA 11.8:
+
+```bash
+python -m pip install \
+    torch==2.4.1 \
+    torchvision==0.19.1 \
+    torchaudio==2.4.1 \
+    --index-url https://download.pytorch.org/whl/cu118
+```
+
+Then install the remaining dependencies:
 
 ```bash
 pip install -r requirements.txt
