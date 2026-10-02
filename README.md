@@ -240,16 +240,6 @@ The default downstream checkpoints are stored at:
 ./save/carsdpm/weight/best.pth
 ```
 
-### Training from random initialization
-
-Omit `--physics-pretrained`:
-
-```bash
-python train.py \
-    --config-path ./configs/carsdpm_downstream.json \
-    --save-root ./save
-```
-
 Use `--run-name <name>` when a separate experiment directory is desired.
 
 ## 5. Evaluation
